@@ -28,6 +28,10 @@
 
 ## 1. Overview
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="Glacier.Studio 3-Pane Desktop Cockpit & Cluster Orchestrator" width="100%" />
+</p>
+
 **`Glacier.Studio`** is a standalone native desktop agentic coding and local LLM mission-control environment built in pure C# on **.NET 10** and **Photino Native WebView**. Modeled on the Google Antigravity 2.0 multi-pane workflow, it unifies conversational ReAct agent execution, real-time PowerShell command execution, in-process workspace AST knowledge graph inspection, zero-copy document outline navigation, Model Context Protocol (MCP) stdio servers, and turnkey orchestration of both single-node and multi-node distributed GPU inference servers.
 
 ```text
