@@ -1,3 +1,5 @@
+![Glacier.Studio Banner](assets/banner.jpg)
+
 # ❄️ Glacier.Studio
 
 ### Pure C# .NET 10 Autonomous Desktop AI Agent IDE & Distributed Cluster Cockpit
@@ -49,6 +51,10 @@
 ---
 
 ## 2. The Glacier Ecosystem Repositories That Power `Glacier.Studio`
+
+<p align="center">
+  <img src="assets/architecture.jpg" alt="Glacier.Studio Architecture Blueprint" width="100%" />
+</p>
 
 `Glacier.Studio` is the flagship desktop cockpit that brings together the core libraries of the **[Glacier .NET 10 High-Performance Ecosystem](https://github.com/ian-cowley)** into a single unified process:
 
