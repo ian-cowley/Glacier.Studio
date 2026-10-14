@@ -1,0 +1,40 @@
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+publish/
+packages/
+release-assets/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Glacier Studio local runtime state & sessions
+.glacier/
+models/
+
+# Mandatory Glacier Zero Secrets Policy
+appsettings.json
+appsettings.*.json
+!appsettings.template.json
+*.env
+*.env.*
+.env*
+*.pfx
+*.pem
+*.key
+secrets.json

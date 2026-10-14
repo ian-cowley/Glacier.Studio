@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Version>1.0.0</Version>
+    <ApplicationTitle>Glacier Agent Studio (Antigravity 2)</ApplicationTitle>
+    <Authors>Ian Cowley</Authors>
+    <Company>Glacier High-Performance Ecosystem</Company>
+    <Description>Pure C# .NET 10 autonomous desktop AI agent IDE and runtime cockpit built on Photino WebView, Glacier.Clavier System-1 routing, Glacier.Graph AST indexing, Glacier.DocTree zero-copy markdown, and Glacier.Inference / Glacier.Inference.Distributed GPU cluster orchestration.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/ian-cowley/Glacier.Studio</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ian-cowley/Glacier.Studio.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Photino.Blazor" Version="4.0.13" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Glacier.Inference" Version="1.2.19" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="wwwroot\**">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('..\..\..\Glacier.Polaris\src\Glacier.Polaris\Glacier.Polaris.csproj')">
+    <ProjectReference Include="..\..\..\Glacier.Gpu\src\Glacier.Gpu\Glacier.Gpu.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.Polaris\src\Glacier.Polaris\Glacier.Polaris.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.Vector\src\Glacier.Vector\Glacier.Vector.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.Graph\src\Glacier.Graph\Glacier.Graph.csproj" />
+    <ProjectReference Include="..\..\..\AgentDevKit.Adk\src\AgentDevKit.Adk\AgentDevKit.Adk.csproj" />
+    <ProjectReference Include="..\..\..\tinypdf-csharp\src\TinyPdf\TinyPdf.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.DocTree\src\Glacier.DocTree\Glacier.DocTree.csproj" />
+    <ProjectReference Include="..\..\..\Glacier.Clavier\src\Glacier.Clavier\Glacier.Clavier.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="!Exists('..\..\..\Glacier.Polaris\src\Glacier.Polaris\Glacier.Polaris.csproj')">
+    <PackageReference Include="Glacier.Gpu" Version="1.0.9" />
+    <PackageReference Include="Glacier.Polaris" Version="1.0.20" />
+    <PackageReference Include="Glacier.Vector" Version="1.0.7" />
+    <PackageReference Include="Glacier.Graph" Version="1.0.4" />
+    <PackageReference Include="Glacier.DocTree" Version="1.0.5" />
+    <PackageReference Include="Glacier.Clavier" Version="1.0.2" />
+    <PackageReference Include="Glacier.AgentDevKit.Adk" Version="1.0.5" />
+    <PackageReference Include="TinyPdf" Version="0.1.11" />
+  </ItemGroup>
+
+</Project>
+
