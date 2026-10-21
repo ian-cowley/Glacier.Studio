@@ -49,9 +49,10 @@ public class GlacierStudioState
     // Model selection state
     public ModelServerProvider Provider { get; set; } = ModelServerProvider.LocalGlacierInference;
     public string EndpointUrl { get; set; } = "http://127.0.0.1:5055/v1";
-    public string SelectedModel { get; set; } = "Qwen3-4B-Instruct-2507-Q4_K_M";
+    public string SelectedModel { get; set; } = "Glacier-Grandmaster-7B-Q4_K_M";
     public string ApiKey { get; set; } = ""; // Loaded only into memory, never saved to disk
     public float Temperature { get; set; } = 0.2f;
+    public float RepetitionPenalty { get; set; } = 1.15f;
     public int MaxTokens { get; set; } = 4096;
     public bool IsAgentMode { get; set; } = true;
 
@@ -325,13 +326,30 @@ public class GlacierStudioState
             "mistral",
             "phi3:mini"
         ],
-        ModelServerProvider.LocalGlacierInference or ModelServerProvider.LocalGlacierDistributed =>
+        ModelServerProvider.LocalGlacierInference =>
         [
+            "Glacier-Grandmaster-7B-Q4_K_M",
+            "Glacier-Grandmaster-4B-Q4_K_M",
             "Qwen3-4B-Instruct-2507-Q4_K_M",
-            "qwen2.5-coder-7b-enterprise-q8_0",
-            "qwen2.5-7b-glacier-enterprise-q8_0",
+            "Qwen2.5-7B-Instruct-1M-Q4_K_M",
             "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M",
+            "Glacier-Architect-Coder-14B-Grandmaster-Q4_K_M",
+            "Glacier-Architect-Coder-14B-Q4_K_M",
+            "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M"
+        ],
+        ModelServerProvider.LocalGlacierDistributed =>
+        [
+            "Glacier-Architect-Coder-14B-Grandmaster-Q4_K_M",
+            "Glacier-Architect-Coder-14B-Q4_K_M",
+            "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M",
+            "Qwen3-4B-Instruct-2507-Q4_K_M",
             "Qwen2.5-7B-Instruct-1M-Q4_K_M"
+        ],
+        ModelServerProvider.ClusterBeastCoder =>
+        [
+            "qwen2.5-coder-14b-instruct-q3_k_m",
+            "qwen2.5-coder-7b-instruct",
+            "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M"
         ],
         ModelServerProvider.LocalLMStudio =>
         [
@@ -369,11 +387,15 @@ public class GlacierStudioState
                 break;
             case ModelServerProvider.LocalGlacierInference:
                 EndpointUrl = "http://127.0.0.1:5055/v1";
-                SelectedModel = "Qwen3-4B-Instruct-2507-Q4_K_M";
+                SelectedModel = "Glacier-Grandmaster-7B-Q4_K_M";
                 break;
             case ModelServerProvider.LocalGlacierDistributed:
                 EndpointUrl = "http://127.0.0.1:8080/v1";
-                SelectedModel = "Qwen3-4B-Instruct-2507-Q4_K_M";
+                SelectedModel = "Glacier-Architect-Coder-14B-Grandmaster-Q4_K_M";
+                break;
+            case ModelServerProvider.ClusterBeastCoder:
+                EndpointUrl = "http://192.168.1.108:8080/v1";
+                SelectedModel = "qwen2.5-coder-14b-instruct-q3_k_m";
                 break;
             case ModelServerProvider.LocalLMStudio:
                 EndpointUrl = "http://127.0.0.1:1234/v1";
@@ -402,6 +424,7 @@ public class GlacierStudioState
         ModelServerProvider.LocalOllama => $"Ollama · {SelectedModel}",
         ModelServerProvider.LocalGlacierInference => $"Glacier.Inference · {SelectedModel}",
         ModelServerProvider.LocalGlacierDistributed => $"Glacier.Distributed · {SelectedModel}",
+        ModelServerProvider.ClusterBeastCoder => $"Beast Cluster · {SelectedModel}",
         ModelServerProvider.LocalLMStudio => $"LM Studio · {SelectedModel}",
         ModelServerProvider.LocalCustom => $"Local · {SelectedModel}",
         ModelServerProvider.RemoteGemini => $"Gemini · {SelectedModel}",

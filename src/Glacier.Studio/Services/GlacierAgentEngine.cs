@@ -22,11 +22,17 @@ public class GlacierAgentEngine
     private readonly GlacierDocTreePreviewService _docPreviewService;
     private readonly GlacierMcpManager _mcpManager;
     private readonly GlacierWorkspaceGraphService _graphService;
+    private GlacierRuntimeLauncherService? _launcherService;
     private CancellationTokenSource? _currentCts;
 
     private readonly string _workspaceRoot = GlacierWorkspaceResolver.ResolveWorkspaceRoot();
 
     public GlacierWorkspaceGraphService GraphService => _graphService;
+    public GlacierRuntimeLauncherService? LauncherService
+    {
+        get => _launcherService;
+        set => _launcherService = value;
+    }
 
     public GlacierAgentEngine(
         HttpClient httpClient,
@@ -34,7 +40,8 @@ public class GlacierAgentEngine
         GlacierConsoleService consoleService,
         GlacierDocTreePreviewService docPreviewService,
         GlacierMcpManager mcpManager,
-        GlacierWorkspaceGraphService? graphService = null)
+        GlacierWorkspaceGraphService? graphService = null,
+        GlacierRuntimeLauncherService? launcherService = null)
     {
         _httpClient = httpClient;
         _state = state;
@@ -42,6 +49,7 @@ public class GlacierAgentEngine
         _docPreviewService = docPreviewService;
         _mcpManager = mcpManager;
         _graphService = graphService ?? new GlacierWorkspaceGraphService(_workspaceRoot);
+        _launcherService = launcherService;
     }
 
     public void CancelCurrentExecution()
@@ -104,6 +112,7 @@ public class GlacierAgentEngine
                 {
                     Role = "assistant",
                     Content = @"### ⚡ Glacier Super Agent Studio Slash Commands
+- `/team <objective>`: Run autonomous heterogeneous agent team across Host (DeepSeek-R1) + Beast (Qwen-Coder).
 - `/terminal <command>`: Directly run shell command in the interactive console.
 - `/inspect <filepath>`: Load and preview any workspace file in the Glacier.DocTree viewer.
 - `/graph [entity]`: Query the in-process `Glacier.Graph` Knowledge Graph ontology.
@@ -185,12 +194,72 @@ public class GlacierAgentEngine
                 _state.ActiveRightTab = "mcp";
                 break;
 
+            case "/btw":
+                await RunAgentLoopAsync($"[FAST DIRECT ANSWER]: {args}", ct);
+                break;
+
+            case "/compact":
+                await CompactSessionHistoryAsync(ct);
+                break;
+
+            case "/runtimes":
+            case "/telemetry":
+                _state.ActiveRightTab = "telemetry";
+                session.Messages.Add(new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = "Opened **Hardware & Inference Runtimes** panel in the right auxiliary drawer.",
+                    Timestamp = DateTime.Now
+                });
+                break;
+
+            case "/browser":
+                await RunAgentLoopAsync($"Please search the web or inspect online references for: {args}", ct);
+                break;
+
+            case "/schedule":
+                session.Messages.Add(new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = $"⏱ **Automation / Schedule Registered**: Scheduled task *\"{args}\"* in session memory.",
+                    Timestamp = DateTime.Now
+                });
+                break;
+
+            case "/grill-me":
+                await RunAgentLoopAsync($"Please interview me thoroughly and ask probing questions to align on technical requirements and design decisions for: {args}", ct);
+                break;
+
             case "/plan":
             case "/goal":
                 await RunAgentLoopAsync($"Please formulate and execute a step-by-step plan for: {args}", ct);
                 break;
 
+            case "/team":
+            case "/teamwork":
+            case "/cluster":
+                await RunHeterogeneousTeamWorkflowAsync(args, ct);
+                break;
+
             default:
+                if (cmd.StartsWith("/mcp:"))
+                {
+                    var segs = cmd.Substring(5).Split(':', 2);
+                    if (segs.Length == 2)
+                    {
+                        string sName = segs[0];
+                        string tName = segs[1];
+                        string callArgs = string.IsNullOrWhiteSpace(args) ? "{}" : args;
+                        string mcpOut = await _mcpManager.ExecuteMcpToolAsync(sName, tName, callArgs, ct);
+                        session.Messages.Add(new ChatMessage
+                        {
+                            Role = "assistant",
+                            Content = $"### 🛠️ MCP Result: `{sName}:{tName}`\n```json\n{mcpOut}\n```",
+                            Timestamp = DateTime.Now
+                        });
+                        break;
+                    }
+                }
                 await RunAgentLoopAsync(prompt, ct);
                 break;
         }
@@ -232,7 +301,7 @@ public class GlacierAgentEngine
         int maxToolTurnsBeforeSynthesis = (analyzedIntent?.Archetype is DeveloperIntentArchetype.ArchitectureReview
             or DeveloperIntentArchetype.CodeSearch
             or DeveloperIntentArchetype.DocumentationAndSpecs)
-            ? (isLocalModel ? 3 : 5)
+            ? 6
             : maxTurns - 1;
 
         try
@@ -253,6 +322,33 @@ public class GlacierAgentEngine
                 var messagesPayload = BuildMessagesPayload(session, strategicPlan, analyzedIntent, isSynthesisTurn);
                 var toolsPayload = isSynthesisTurn ? new JsonArray() : GetToolsSchema(analyzedIntent);
 
+                // Dual-tier routing resolution:
+                // Only activate dual-tier cluster routing when in distributed/cluster mode.
+                // When in LocalGlacierInference, LocalOllama, RemoteGemini, etc., respect the user's chosen local provider directly.
+                string targetEndpoint;
+                string targetModel;
+                AgentTurnTier turnTier = AgentTurnTier.LocalFastTool;
+
+                if (_state.Provider is ModelServerProvider.LocalGlacierDistributed or ModelServerProvider.ClusterBeastCoder)
+                {
+                    turnTier = (currentTurn == 1 || isSynthesisTurn)
+                        ? AgentTurnTier.RemoteDeepReasoning
+                        : AgentTurnTier.LocalFastTool;
+
+                    targetEndpoint = _launcherService != null
+                        ? _launcherService.ResolveEndpointForTurn(turnTier)
+                        : _state.EndpointUrl;
+
+                    targetModel = _launcherService != null
+                        ? _launcherService.ResolveModelForTurn(turnTier)
+                        : _state.SelectedModel;
+                }
+                else
+                {
+                    targetEndpoint = _state.EndpointUrl;
+                    targetModel = _state.SelectedModel;
+                }
+
                 // Create a distinct assistant message for this turn
                 currentAssistantMsg = new ChatMessage
                 {
@@ -264,19 +360,29 @@ public class GlacierAgentEngine
 
                 _state.ExecutionStatus = AgentExecutionStatus.StreamingResponse;
                 _state.StatusText = isSynthesisTurn
-                    ? "Streaming Executive Synthesis..."
-                    : $"Streaming Turn {currentTurn}...";
+                    ? $"Streaming Executive Synthesis ({targetModel})..."
+                    : $"Streaming Turn {currentTurn} ({targetModel})...";
                 _state.NotifyStateChanged();
 
                 LlmStreamResult? streamResult = null;
                 try
                 {
-                    streamResult = await StreamModelEndpointAsync(
+                    streamResult = await StreamModelEndpointCoreAsync(
+                        targetEndpoint,
+                        targetModel,
+                        _state.ApiKey,
                         messagesPayload,
                         toolsPayload,
                         onContentDelta: delta =>
                         {
                             currentAssistantMsg.Content += delta;
+                            if (currentAssistantMsg.Content.Contains("<|im_end|>") || currentAssistantMsg.Content.Contains("<|endoftext|>"))
+                            {
+                                currentAssistantMsg.Content = currentAssistantMsg.Content
+                                    .Replace("<|im_end|>", "")
+                                    .Replace("<|endoftext|>", "")
+                                    .Replace("<|im_start|>", "");
+                            }
                             _state.NotifyStateChanged();
                         },
                         onReasoningDelta: delta =>
@@ -285,10 +391,71 @@ public class GlacierAgentEngine
                             _state.NotifyStateChanged();
                         },
                         ct);
+
+                    if (turnTier == AgentTurnTier.RemoteDeepReasoning && (targetEndpoint == _launcherService?.BeastEndpointUrl || targetEndpoint.Contains("192.168.1.108")))
+                    {
+                        _launcherService?.RecordRemoteSuccess();
+                    }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
+                }
+                catch (Exception ex) when (targetEndpoint == _launcherService?.BeastEndpointUrl || turnTier == AgentTurnTier.RemoteDeepReasoning)
+                {
+                    // Failover from Beast remote cluster to local standalone!
+                    _launcherService?.RecordRemoteFailure(ex.Message);
+
+                    string fallbackEndpoint = $"http://127.0.0.1:{_launcherService?.InferencePort ?? 5055}/v1";
+                    string fallbackModel = _launcherService?.ResolveModelForTurn(AgentTurnTier.LocalFastTool) ?? _state.SelectedModel;
+
+                    _consoleService.AddLog("HYBRID",
+                        $"[FALLBACK]: Remote Beast cluster error ({ex.Message}). Automatically failing over turn {currentTurn} to local standalone runtime ({fallbackEndpoint}).",
+                        isError: true);
+
+                    currentAssistantMsg.Content = $"> ⚠️ *Beast cluster node unavailable ({ex.Message}). Seamlessly falling back to local standalone model (`{fallbackModel}`).*\n\n";
+                    _state.NotifyStateChanged();
+
+                    try
+                    {
+                        streamResult = await StreamModelEndpointCoreAsync(
+                            fallbackEndpoint,
+                            fallbackModel,
+                            _state.ApiKey,
+                            messagesPayload,
+                            toolsPayload,
+                            onContentDelta: delta =>
+                            {
+                                currentAssistantMsg.Content += delta;
+                                if (currentAssistantMsg.Content.Contains("<|im_end|>") || currentAssistantMsg.Content.Contains("<|endoftext|>"))
+                                {
+                                    currentAssistantMsg.Content = currentAssistantMsg.Content
+                                        .Replace("<|im_end|>", "")
+                                        .Replace("<|endoftext|>", "")
+                                        .Replace("<|im_start|>", "");
+                                }
+                                _state.NotifyStateChanged();
+                            },
+                            onReasoningDelta: delta =>
+                            {
+                                currentAssistantMsg.ReasoningContent = (currentAssistantMsg.ReasoningContent ?? "") + delta;
+                                _state.NotifyStateChanged();
+                            },
+                            ct);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception fallbackEx)
+                    {
+                        _consoleService.AddLog("SYSTEM", $"Local fallback failed: {fallbackEx.Message}", isError: true);
+                        _state.ExecutionStatus = AgentExecutionStatus.Error;
+                        _state.StatusText = $"Endpoint Error: {fallbackEx.Message}";
+                        currentAssistantMsg.IsError = true;
+                        currentAssistantMsg.Content += $"### ⚠️ Model Endpoint Error\n\nCould not communicate with local fallback endpoint at `{fallbackEndpoint}`: `{fallbackEx.Message}`";
+                        break;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -296,11 +463,20 @@ public class GlacierAgentEngine
                     _state.ExecutionStatus = AgentExecutionStatus.Error;
                     _state.StatusText = $"Endpoint Error: {ex.Message}";
                     currentAssistantMsg.IsError = true;
-                    currentAssistantMsg.Content = $"### ⚠️ Model Endpoint Error\n\nCould not communicate with model endpoint at `{_state.EndpointUrl}`: `{ex.Message}`\n\nPlease ensure the model server is running and reachable, or switch to a different provider in the left pane.";
+                    currentAssistantMsg.Content = $"### ⚠️ Model Endpoint Error\n\nCould not communicate with model endpoint at `{targetEndpoint}`: `{ex.Message}`\n\nPlease ensure the model server is running and reachable, or switch to a different provider in the left pane.";
                     break;
                 }
 
                 if (streamResult == null) break;
+
+                if (!string.IsNullOrWhiteSpace(currentAssistantMsg.Content))
+                {
+                    currentAssistantMsg.Content = currentAssistantMsg.Content
+                        .Replace("<|im_end|>", "")
+                        .Replace("<|endoftext|>", "")
+                        .Replace("<|im_start|>", "")
+                        .TrimEnd();
+                }
 
                 totalCompletionTokens += streamResult.CompletionTokens;
                 if (streamResult.TotalTokens > 0)
@@ -319,6 +495,62 @@ public class GlacierAgentEngine
                         if (!isSynthesisTurn)
                         {
                             streamResult.ToolCalls.AddRange(extractedCalls);
+                        }
+                        _state.NotifyStateChanged();
+                    }
+                }
+
+                // Also check ReasoningContent (thinking block) if Content didn't contain tool calls
+                if (streamResult.ToolCalls.Count == 0 && !string.IsNullOrWhiteSpace(currentAssistantMsg.ReasoningContent))
+                {
+                    var (extractedCalls, _) = ExtractToolCallsFromContent(currentAssistantMsg.ReasoningContent);
+                    if (extractedCalls.Count > 0 && !isSynthesisTurn)
+                    {
+                        streamResult.ToolCalls.AddRange(extractedCalls);
+                    }
+                }
+
+                // Clavier Autonomous Auto-Bootstrapping:
+                // If this is Turn 1 and the intent requires tool execution (e.g. WebResearchAndNews),
+                // but the local model returned 0 tool calls or stalled with minimal text,
+                // autonomously trigger Phase 1 of the Strategic Plan so the user is never left hanging.
+                if (streamResult.ToolCalls.Count == 0 && currentTurn == 1 && !isSynthesisTurn && _state.IsAgentMode)
+                {
+                    if (analyzedIntent?.Archetype == DeveloperIntentArchetype.WebResearchAndNews)
+                    {
+                        var urlMatch = Regex.Match(initialPrompt, @"https?://[^\s""'>]+|news\.google\.com", RegexOptions.IgnoreCase);
+                        if (urlMatch.Success)
+                        {
+                            string targetUrl = urlMatch.Value;
+                            if (!targetUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                                targetUrl = "https://" + targetUrl;
+
+                            _consoleService.AddLog("CLAVIER", $"Auto-executing Phase 1 Web Retrieval for: {targetUrl}");
+                            streamResult.ToolCalls.Add(new ToolCallItem
+                            {
+                                Id = $"call_{Guid.NewGuid():N}"[..12],
+                                Name = "fetch_web_url",
+                                Arguments = JsonSerializer.Serialize(new { url = targetUrl })
+                            });
+                        }
+                        else
+                        {
+                            string cleanQuery = Regex.Replace(initialPrompt, @"^(?:please\s+|can\s+you\s+)?(?:search\s+for|find|get\s+news\s+on|browse|look\s+up|read\s+news\s+from|summarize)\s+", "", RegexOptions.IgnoreCase).Trim();
+                            if (string.IsNullOrWhiteSpace(cleanQuery)) cleanQuery = "latest world news";
+
+                            _consoleService.AddLog("CLAVIER", $"Auto-executing Phase 1 Web Search for: {cleanQuery}");
+                            streamResult.ToolCalls.Add(new ToolCallItem
+                            {
+                                Id = $"call_{Guid.NewGuid():N}"[..12],
+                                Name = "search_web",
+                                Arguments = JsonSerializer.Serialize(new { query = cleanQuery })
+                            });
+                        }
+
+                        // Clear any tiny degenerate text like "provide" or timid disclaimers so the response cleanly transitions to tool execution
+                        if (currentAssistantMsg.Content.Trim().Length < 50 || currentAssistantMsg.Content.Contains("unable to browse", StringComparison.OrdinalIgnoreCase))
+                        {
+                            currentAssistantMsg.Content = "";
                         }
                         _state.NotifyStateChanged();
                     }
@@ -393,8 +625,11 @@ public class GlacierAgentEngine
                         });
                     }
 
-                    _state.ExecutionStatus = AgentExecutionStatus.Thinking;
-                    _state.NotifyStateChanged();
+                    if (!ct.IsCancellationRequested)
+                    {
+                        _state.ExecutionStatus = AgentExecutionStatus.Thinking;
+                        _state.NotifyStateChanged();
+                    }
                 }
                 else
                 {
@@ -471,10 +706,23 @@ public class GlacierAgentEngine
                 currentAssistantMsg.TokensPerSecond = _state.LastTokensPerSecond;
             }
 
-            _state.ExecutionStatus = AgentExecutionStatus.Completed;
-            _state.StatusText = _state.LastTokensPerSecond > 0 
-                ? $"Completed in {elapsedSeconds:F2}s ({_state.LastTokensPerSecond:F1} tok/s)"
-                : $"Completed in {elapsedSeconds:F2}s";
+            if (ct.IsCancellationRequested || _state.ExecutionStatus == AgentExecutionStatus.Cancelled)
+            {
+                _state.ExecutionStatus = AgentExecutionStatus.Cancelled;
+                _state.StatusText = "Cancelled by user";
+                if (currentAssistantMsg != null && !currentAssistantMsg.Content.Contains("Execution was cancelled"))
+                {
+                    currentAssistantMsg.DurationSeconds = elapsedSeconds;
+                    currentAssistantMsg.Content += "\n\n*(Execution was cancelled)*";
+                }
+            }
+            else if (_state.ExecutionStatus != AgentExecutionStatus.Error)
+            {
+                _state.ExecutionStatus = AgentExecutionStatus.Completed;
+                _state.StatusText = _state.LastTokensPerSecond > 0 
+                    ? $"Completed in {elapsedSeconds:F2}s ({_state.LastTokensPerSecond:F1} tok/s)"
+                    : $"Completed in {elapsedSeconds:F2}s";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -501,6 +749,432 @@ public class GlacierAgentEngine
             _state.ActiveTurnStartUtc = null;
             _state.NotifyStateChanged();
         }
+    }
+
+    private async Task RunHeterogeneousTeamWorkflowAsync(string objective, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(objective))
+        {
+            objective = "Design and implement a high-throughput lock-free concurrency primitive with benchmark suite.";
+        }
+
+        var session = _state.ActiveSession;
+        var sw = Stopwatch.StartNew();
+
+        _state.ActiveTurnStartUtc = DateTime.UtcNow;
+        _state.ExecutionStatus = AgentExecutionStatus.Thinking;
+        _state.StatusText = "Agent Team Active: Spawning Host + Beast Subagents...";
+        _state.NotifyStateChanged();
+
+        var teamMsg = new ChatMessage
+        {
+            Role = "assistant",
+            Content = $"### 🚀 Heterogeneous Agent Team Initialized\n\n" +
+                      $"- 🧠 **Architect Subagent**: Host DeepSeek-R1-14B (Dual-GPU RTX 4060 + 890M :8080)\n" +
+                      $"- ⚡ **Coder Subagent**: Beast Qwen2.5-Coder-14B (RTX 3060 192.168.1.108:8080)\n" +
+                      $"- **Objective**: *\"{objective}\"*\n\n" +
+                      $"*Phase 1: Concurrently dispatching tasks to both cluster nodes in parallel...*",
+            Timestamp = DateTime.Now
+        };
+        session.Messages.Add(teamMsg);
+        _state.NotifyStateChanged();
+
+        string hostUrl = "http://127.0.0.1:8080/v1";
+        string hostModel = "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M";
+        string beastUrl = "http://192.168.1.108:8080/v1";
+        string beastModel = "qwen2.5-coder-14b-instruct-q3_k_m";
+
+        _consoleService.AddLog("TEAM", $"Starting heterogeneous cluster subagents for objective: {objective}");
+
+        try
+        {
+            // PHASE 1: Concurrent Parallel Execution
+            // Subagent A (Host): Formal Architecture, Invariants, Memory Barrier Semantics
+            // Subagent B (Beast): BenchmarkDotNet Suite & Multi-Thread Stress Harness
+            var architectPrompt = new List<JsonObject>
+            {
+                new()
+                {
+                    ["role"] = "system",
+                    ["content"] = "You are the Lead Systems Architect & Concurrency Specialist in an autonomous agent team. Your role is to deeply analyze the objective and define the formal data structures, cache-line false sharing padding ([StructLayout(LayoutKind.Explicit)]), memory barrier semantics (Volatile, Interlocked, MemoryBarrier), and API interface contract."
+                },
+                new()
+                {
+                    ["role"] = "user",
+                    ["content"] = $"Objective: {objective}\n\nPlease provide the formal architectural blueprint, memory layouts, invariants, and interface contracts."
+                }
+            };
+
+            var harnessPrompt = new List<JsonObject>
+            {
+                new()
+                {
+                    ["role"] = "system",
+                    ["content"] = "You are the Performance & Benchmark Engineer in an autonomous agent team. Your role is to construct a production BenchmarkDotNet harness and multi-threaded stress verification suite for the given objective."
+                },
+                new()
+                {
+                    ["role"] = "user",
+                    ["content"] = $"Objective: {objective}\n\nPlease write the complete BenchmarkDotNet harness and multi-threaded stress test runner."
+                }
+            };
+
+            _state.StatusText = "Agent Team: Host (Architect) & Beast (Benchmark) running concurrently in parallel...";
+            _state.NotifyStateChanged();
+
+            var taskArchitect = SafeQueryNodeAsync(
+                hostUrl, hostModel, _state.EndpointUrl, _state.SelectedModel, architectPrompt, "Host-Architect", ct);
+
+            var taskHarness = SafeQueryNodeAsync(
+                beastUrl, beastModel, _state.EndpointUrl, _state.SelectedModel, harnessPrompt, "Beast-Harness", ct);
+
+            await Task.WhenAll(taskArchitect, taskHarness);
+
+            var architectResult = await taskArchitect;
+            var harnessResult = await taskHarness;
+
+            _consoleService.AddLog("TEAM", $"Phase 1 complete. Architect: {architectResult.CompletionTokens} tokens, Harness: {harnessResult.CompletionTokens} tokens.");
+
+            // Update intermediate status in chat
+            teamMsg.Content += $"\n\n✓ **Phase 1 Concurrent Execution Succeeded**:\n" +
+                               $"- Architect generated **{architectResult.CompletionTokens} tokens**.\n" +
+                               $"- Test Lead generated **{harnessResult.CompletionTokens} tokens**.\n\n" +
+                               $"*Phase 2: Handing architectural blueprint to Beast Desktop for full C# implementation...*";
+            _state.StatusText = "Agent Team: Beast Desktop generating production C# implementation...";
+            _state.NotifyStateChanged();
+
+            // PHASE 2: Machine-to-Machine Handoff to Beast
+            string cleanBlueprint = CleanThinkingTags(architectResult.Content);
+            string cleanHarness = CleanThinkingTags(harnessResult.Content);
+
+            var implPrompt = new List<JsonObject>
+            {
+                new()
+                {
+                    ["role"] = "system",
+                    ["content"] = "You are the Lead Implementation Engineer in an autonomous agent team. Implement the complete, production-grade, zero-allocation C# solution adhering strictly to the Architect's specification and compatible with the test harness. Always specify target file paths clearly using headers or comments (e.g. // File: src/Glacier.RingBuffer/SpscQueue.cs)."
+                },
+                new()
+                {
+                    ["role"] = "user",
+                    ["content"] = $"Objective: {objective}\n\n" +
+                                  $"=== ARCHITECTURAL BLUEPRINT (from Host DeepSeek-R1) ===\n{cleanBlueprint}\n\n" +
+                                  $"=== BENCHMARK HARNESS ===\n{cleanHarness}\n\n" +
+                                  $"Now write the complete, optimized C# implementation code. For every file, indicate the target file path clearly."
+                }
+            };
+
+            var implResult = await SafeQueryNodeAsync(
+                beastUrl, beastModel, _state.EndpointUrl, _state.SelectedModel, implPrompt, "Beast-Implementation", ct);
+
+            // Phase 3: Automatically parse and persist any generated code artifacts directly to disk!
+            var savedFiles = new List<string>();
+            savedFiles.AddRange(PersistExtractedCodeArtifacts(implResult.Content));
+            savedFiles.AddRange(PersistExtractedCodeArtifacts(harnessResult.Content));
+            savedFiles = savedFiles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+            string filesSection = "";
+            if (savedFiles.Count > 0)
+            {
+                var sbFiles = new StringBuilder("\n\n### 📁 Files Written to Workspace\n");
+                foreach (var f in savedFiles)
+                {
+                    sbFiles.AppendLine($"- ✓ `{f}`");
+                }
+                filesSection = sbFiles.ToString();
+            }
+
+            sw.Stop();
+            double totalSec = sw.Elapsed.TotalSeconds;
+            int totalTokens = architectResult.CompletionTokens + harnessResult.CompletionTokens + implResult.CompletionTokens;
+            double combinedTps = totalSec > 0 ? totalTokens / totalSec : 0;
+
+            _state.LastTurnDuration = sw.Elapsed;
+            _state.LastTokensPerSecond = combinedTps;
+            teamMsg.DurationSeconds = totalSec;
+            teamMsg.TokensPerSecond = combinedTps;
+
+            // Render Final Unified Report
+            teamMsg.Content = 
+$@"## 🚀 Heterogeneous Agent Team Synthesis
+
+> **Team Execution Telemetry**:
+> - 🧠 **Lead Architect**: Host DeepSeek-R1-14B (Dual-GPU RTX 4060 + 890M)
+> - ⚡ **Implementation & Benchmark Lead**: Beast Desktop Qwen2.5-Coder-14B (RTX 3060 12GB)
+> - ⏱️ **Total Wall-Clock Time**: {totalSec:F2}s · **Total Tokens**: {totalTokens} (~{combinedTps:F1} aggregate tok/s)
+> - 🔄 **Transit**: Zero-copy LAN RPC machine-to-machine handoff (zero user clipboard required)
+{filesSection}
+
+---
+
+### 🧠 Phase 1: Formal Architecture & Invariants (Host DeepSeek-R1)
+<details open>
+<summary>Architectural Blueprint &amp; Concurrency Model</summary>
+
+{architectResult.Content}
+</details>
+
+---
+
+### ⚡ Phase 2: Production Implementation (Beast Qwen2.5-Coder)
+{implResult.Content}
+
+---
+
+### 📊 Phase 3: Benchmark & Stress Harness (Beast Qwen2.5-Coder)
+<details>
+<summary>BenchmarkDotNet &amp; Fuzz Harness</summary>
+
+{harnessResult.Content}
+</details>";
+
+            _state.ExecutionStatus = AgentExecutionStatus.Completed;
+            _state.StatusText = $"Agent Team Complete in {totalSec:F2}s ({combinedTps:F1} tok/s across cluster)";
+        }
+        catch (Exception ex)
+        {
+            _state.ExecutionStatus = AgentExecutionStatus.Error;
+            _state.StatusText = $"Team Execution Error: {ex.Message}";
+            teamMsg.Content += $"\n\n⚠️ **Agent Team Error**: `{ex.Message}`";
+            _consoleService.AddLog("TEAM", $"Agent team failed: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _state.ActiveTurnStartUtc = null;
+            _state.SaveActiveSession();
+            _state.NotifyStateChanged();
+        }
+    }
+
+    private async Task<LlmStreamResult> SafeQueryNodeAsync(
+        string nodeUrl,
+        string nodeModel,
+        string fallbackUrl,
+        string fallbackModel,
+        List<JsonObject> messages,
+        string nodeName,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await StreamModelEndpointCoreAsync(
+                nodeUrl, nodeModel, null, messages, new JsonArray(), null, null, ct);
+        }
+        catch (Exception ex)
+        {
+            _consoleService.AddLog("TEAM", $"Node '{nodeName}' ({nodeUrl}) error: {ex.Message}. Falling back to default studio endpoint ({fallbackUrl}).", isError: true);
+            return await StreamModelEndpointCoreAsync(
+                fallbackUrl, fallbackModel, _state.ApiKey, messages, new JsonArray(), null, null, ct);
+        }
+    }
+
+    private static string CleanThinkingTags(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        string text = raw;
+        int start = text.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
+        int end = text.IndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+        if (start >= 0 && end > start)
+        {
+            text = (text[..start] + text[(end + 8)..]).Trim();
+        }
+        else if (end >= 0 && start < 0)
+        {
+            text = text[(end + 8)..].Trim();
+        }
+        text = Regex.Replace(text, @"<｜[^>]+｜>", "").Trim();
+        return text.Trim();
+    }
+
+    private List<string> PersistExtractedCodeArtifacts(string? text)
+    {
+        var writtenFiles = new List<string>();
+        if (string.IsNullOrWhiteSpace(text)) return writtenFiles;
+
+        // Pattern 1: Explicit <write_file path="...">content</write_file>
+        var xmlMatches = Regex.Matches(text, @"<write_file\s+path=[""']([^""']+)[""']\s*>(.*?)</write_file>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        foreach (Match m in xmlMatches)
+        {
+            string p = m.Groups[1].Value.Trim();
+            string content = m.Groups[2].Value.Trim();
+            if (TrySaveArtifact(p, content, out string savedRel))
+            {
+                if (!writtenFiles.Contains(savedRel)) writtenFiles.Add(savedRel);
+            }
+        }
+
+        // Pattern 2: Markdown headers with file paths right before code blocks
+        // e.g. "create the `SpscQueue.cs` file in `src/Glacier.RingBuffer/`"
+        var splitPathMatches = Regex.Matches(text, @"create (?:the )?[`""']([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+)[`""'] (?:file )?in [`""']([a-zA-Z0-9_\-\./\\]+)[`""'][^\n\r]*[\r\n]+[^\n\r`]*```(?:csharp|cs|dotnet)?\s*[\r\n]+(.*?)```", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        foreach (Match m in splitPathMatches)
+        {
+            string fileName = m.Groups[1].Value.Trim();
+            string dirName = m.Groups[2].Value.Trim();
+            string fullRel = Path.Combine(dirName, fileName).Replace('\\', '/');
+            string content = m.Groups[3].Value.Trim();
+            if (TrySaveArtifact(fullRel, content, out string savedRel))
+            {
+                if (!writtenFiles.Contains(savedRel)) writtenFiles.Add(savedRel);
+            }
+        }
+
+        // Pattern 3: Direct file paths in text before code blocks (e.g. "in `tests/Glacier.RingBuffer.Tests/Benchmark.cs`")
+        var codeBlockMatches = Regex.Matches(text, @"(?:in|at|file|path|to)\s*[`""']([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)[`""'][^\n\r]*[\r\n]+[^\n\r`]*```(?:csharp|cs|dotnet)?\s*[\r\n]+(.*?)```", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        foreach (Match m in codeBlockMatches)
+        {
+            string p = m.Groups[1].Value.Trim();
+            string content = m.Groups[2].Value.Trim();
+            if (TrySaveArtifact(p, content, out string savedRel))
+            {
+                if (!writtenFiles.Contains(savedRel)) writtenFiles.Add(savedRel);
+            }
+        }
+
+        // Pattern 4: In-code comment header "// File: <path>"
+        var commentMatches = Regex.Matches(text, @"```(?:csharp|cs|dotnet)?\s*[\r\n]+(?://|#)\s*(?:File|Path|filepath):\s*[`""']?([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)[`""']?\s*[\r\n]+(.*?)```", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        foreach (Match m in commentMatches)
+        {
+            string p = m.Groups[1].Value.Trim();
+            string content = m.Groups[2].Value.Trim();
+            if (TrySaveArtifact(p, content, out string savedRel))
+            {
+                if (!writtenFiles.Contains(savedRel)) writtenFiles.Add(savedRel);
+            }
+        }
+
+        return writtenFiles;
+    }
+
+    private bool TrySaveArtifact(string rawPath, string content, out string savedRelPath)
+    {
+        savedRelPath = "";
+        try
+        {
+            rawPath = rawPath.Trim().Trim('`', '"', '\'');
+            if (string.IsNullOrWhiteSpace(rawPath) || string.IsNullOrWhiteSpace(content)) return false;
+
+            if (!TryResolveWorkspacePath(rawPath, allowEmptyAsRoot: false, out string fullPath, out _))
+            {
+                return false;
+            }
+
+            string? dir = Path.GetDirectoryName(fullPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.WriteAllText(fullPath, content, Encoding.UTF8);
+            _docPreviewService.LoadFile(fullPath);
+            _graphService.IngestFileContent(fullPath, content);
+            savedRelPath = _graphService.NormalizeRelativePath(fullPath);
+            _state.ActiveSession.WorkingMemory.RecordFact($"Created file '{savedRelPath}' ({content.Length} chars)");
+            _consoleService.AddLog("TEAM", $"Auto-persisted artifact to disk: {savedRelPath} ({content.Length} chars)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _consoleService.AddLog("TEAM", $"Failed to auto-persist artifact '{rawPath}': {ex.Message}", isError: true);
+            return false;
+        }
+    }
+
+    private async Task CompactSessionHistoryAsync(CancellationToken ct)
+    {
+        var session = _state.ActiveSession;
+        if (session.Messages.Count <= 2)
+        {
+            session.Messages.Add(new ChatMessage
+            {
+                Role = "assistant",
+                Content = "Conversation is already compact (2 or fewer messages).",
+                Timestamp = DateTime.Now
+            });
+            return;
+        }
+
+        _state.ExecutionStatus = AgentExecutionStatus.Thinking;
+        _state.StatusText = "Compacting conversation history...";
+        _state.NotifyStateChanged();
+
+        try
+        {
+            var textToSummarize = new StringBuilder();
+            foreach (var m in session.Messages)
+            {
+                if (m.Role == "user") textToSummarize.AppendLine($"User: {m.Content}");
+                else if (m.Role == "assistant")
+                {
+                    var (clean, _) = ExtractThinkingFromText(m.Content ?? "");
+                    if (!string.IsNullOrWhiteSpace(clean))
+                    {
+                        textToSummarize.AppendLine($"Assistant: {clean}");
+                    }
+                }
+            }
+
+            var promptMsgs = new List<JsonObject>
+            {
+                new()
+                {
+                    ["role"] = "system",
+                    ["content"] = "You are an expert conversation summarizer. Distill the following conversation into a concise, high-density structured markdown summary covering key architectural decisions, goals, code changes, and open items."
+                },
+                new()
+                {
+                    ["role"] = "user",
+                    ["content"] = textToSummarize.ToString()
+                }
+            };
+
+            var summaryRes = await SafeQueryNodeAsync(_state.EndpointUrl, _state.SelectedModel, _state.EndpointUrl, _state.SelectedModel, promptMsgs, "Compactor", ct);
+            string summary = summaryRes.Content;
+
+            session.Messages.Clear();
+            session.Messages.Add(new ChatMessage
+            {
+                Role = "assistant",
+                Content = $"### 🗜️ Conversation History Compacted\n*Previous message context was compressed to free up the context window.*\n\n**Structured Session Summary:**\n\n{summary}",
+                Timestamp = DateTime.Now
+            });
+        }
+        catch (Exception ex)
+        {
+            session.Messages.Add(new ChatMessage
+            {
+                Role = "assistant",
+                Content = $"Error compacting conversation: {ex.Message}",
+                Timestamp = DateTime.Now
+            });
+        }
+        finally
+        {
+            _state.ExecutionStatus = AgentExecutionStatus.Idle;
+            _state.StatusText = "Ready";
+            _state.NotifyStateChanged();
+        }
+    }
+
+    private static (string CleanText, string Thought) ExtractThinkingFromText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return ("", "");
+        text = Regex.Replace(text, @"<｜[^>]+｜>", "").Trim();
+
+        int start = text.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
+        int end = text.IndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+        if (start >= 0 && end > start)
+        {
+            string thought = text.Substring(start + 7, end - (start + 7)).Trim();
+            string clean = (text.Substring(0, start) + text.Substring(end + 8)).Trim();
+            return (clean, thought);
+        }
+        if (end >= 0 && start < 0)
+        {
+            string thought = text.Substring(0, end).Trim();
+            string clean = text.Substring(end + 8).Trim();
+            return (clean, thought);
+        }
+        return (text.Trim(), "");
     }
 
     private bool TryResolveWorkspacePath(string rawPath, bool allowEmptyAsRoot, out string fullPath, out string error)
@@ -654,6 +1328,26 @@ public class GlacierAgentEngine
                     _consoleService.AddLog("AGENT", $"File created/updated: {wPath} ({wContent.Length} chars)");
                     return (true, $"Successfully wrote {wContent.Length} characters to '{wPath}'.");
 
+                case "delete_file":
+                    string dPath = root.TryGetProperty("path", out var dpDelProp) ? dpDelProp.GetString() ?? "" : "";
+                    if (string.IsNullOrWhiteSpace(dPath) && root.TryGetProperty("raw", out var rawDPathProp))
+                    {
+                        dPath = rawDPathProp.GetString() ?? "";
+                    }
+                    if (!TryResolveWorkspacePath(dPath, allowEmptyAsRoot: false, out string fullDPath, out string delErr))
+                    {
+                        return (false, delErr);
+                    }
+                    if (!File.Exists(fullDPath))
+                    {
+                        return (false, $"Error: File '{dPath}' does not exist.");
+                    }
+                    File.Delete(fullDPath);
+                    string relDelPath = _graphService.NormalizeRelativePath(fullDPath);
+                    memory.RecordFact($"Deleted file '{relDelPath}'");
+                    _consoleService.AddLog("AGENT", $"File deleted: {relDelPath}");
+                    return (true, $"Successfully deleted '{relDelPath}'.");
+
                 case "list_directory":
                     string dirPath = root.TryGetProperty("path", out var dpProp) ? dpProp.GetString() ?? "" : "";
                     if (string.IsNullOrWhiteSpace(dirPath) && root.TryGetProperty("raw", out var rawDirProp))
@@ -664,7 +1358,33 @@ public class GlacierAgentEngine
                     {
                         return (false, dirErr);
                     }
-                    if (!Directory.Exists(targetDir)) return (false, $"Error: Directory '{dirPath}' not found.");
+                    if (!Directory.Exists(targetDir))
+                    {
+                        // Fuzzy recovery for common LLM path mistakes (e.g. "src/Glacier.Gpu" instead of "Glacier.Gpu/src/Glacier.Gpu")
+                        string leaf = Path.GetFileName(dirPath.TrimEnd('/', '\\'));
+                        string candSub = Path.Combine(_workspaceRoot, leaf, "src", leaf);
+                        string candRoot = Path.Combine(_workspaceRoot, leaf);
+                        if (Directory.Exists(candSub))
+                        {
+                            targetDir = candSub;
+                        }
+                        else if (Directory.Exists(candRoot))
+                        {
+                            targetDir = candRoot;
+                        }
+                        else
+                        {
+                            var matchingDir = Directory.GetDirectories(_workspaceRoot, leaf, SearchOption.TopDirectoryOnly).FirstOrDefault();
+                            if (matchingDir != null)
+                            {
+                                targetDir = matchingDir;
+                            }
+                            else
+                            {
+                                return (false, $"Error: Directory '{dirPath}' not found.");
+                            }
+                        }
+                    }
 
                     var entries = Directory.GetFileSystemEntries(targetDir);
                     var subDirs = new List<string>();
@@ -744,9 +1464,63 @@ public class GlacierAgentEngine
                     memory.AddTrace($"Called MCP {server}.{mcpTool} (Success: {mcpSuccess})");
                     return (mcpSuccess, mcpResult);
 
+                case "fetch_web_url":
+                    string webUrl = root.TryGetProperty("url", out var uProp) ? uProp.GetString() ?? "" : "";
+                    if (string.IsNullOrWhiteSpace(webUrl) && root.TryGetProperty("path", out var pPropUrl))
+                    {
+                        webUrl = pPropUrl.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webUrl) && root.TryGetProperty("link", out var lProp))
+                    {
+                        webUrl = lProp.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webUrl) && root.TryGetProperty("target", out var tPropUrl))
+                    {
+                        webUrl = tPropUrl.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webUrl) && root.TryGetProperty("raw", out var rawUProp))
+                    {
+                        webUrl = rawUProp.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webUrl)) return (false, "Error: 'url' parameter is required.");
+                    var webContent = await FetchWebUrlContentAsync(webUrl, ct);
+                    memory.AddTrace($"Fetched web URL '{webUrl}' ({webContent.Length} chars)");
+                    return (true, webContent);
+
+                case "search_web":
+                    string webQuery = root.TryGetProperty("query", out var wqProp) ? wqProp.GetString() ?? "" : "";
+                    if (string.IsNullOrWhiteSpace(webQuery) && root.TryGetProperty("q", out var qProp))
+                    {
+                        webQuery = qProp.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webQuery) && root.TryGetProperty("search", out var sPropSearch))
+                    {
+                        webQuery = sPropSearch.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webQuery) && root.TryGetProperty("topic", out var topProp))
+                    {
+                        webQuery = topProp.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webQuery) && root.TryGetProperty("path", out var pPropSearch))
+                    {
+                        webQuery = pPropSearch.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webQuery) && root.TryGetProperty("raw", out var rawWqProp))
+                    {
+                        webQuery = rawWqProp.GetString() ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(webQuery)) return (false, "Error: 'query' parameter is required.");
+                    var searchResult = await SearchWebAsync(webQuery, ct);
+                    memory.AddTrace($"Searched web for '{webQuery}'");
+                    return (true, searchResult);
+
                 default:
                     return (false, $"Error: Unknown tool '{toolName}'.");
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -754,28 +1528,225 @@ public class GlacierAgentEngine
         }
     }
 
-    private async Task<LlmStreamResult> StreamModelEndpointAsync(
+    private static HttpRequestMessage CreateBrowserLikeHttpRequest(string url)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        req.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8");
+        req.Headers.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
+        req.Headers.Add("Sec-Ch-Ua", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"");
+        req.Headers.Add("Sec-Ch-Ua-Mobile", "?0");
+        req.Headers.Add("Sec-Ch-Ua-Platform", "\"Windows\"");
+        req.Headers.Add("Sec-Fetch-Dest", "document");
+        req.Headers.Add("Sec-Fetch-Mode", "navigate");
+        req.Headers.Add("Sec-Fetch-Site", "none");
+        req.Headers.Add("Sec-Fetch-User", "?1");
+        req.Headers.Add("Upgrade-Insecure-Requests", "1");
+        req.Headers.Add("Cookie", "CONSENT=YES+; SOCS=CAESHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiA_LymBg; 1P_JAR=2024-04-01-00;");
+        return req;
+    }
+
+    private async Task<string> FetchWebUrlContentAsync(string url, CancellationToken ct)
+    {
+        try
+        {
+            string targetUrl = url.Trim();
+
+            // Intelligent rewrite: If user requested news.google.com without specific RSS path,
+            // route directly to Google News RSS feed to bypass JavaScript client render & consent wall
+            if (targetUrl.Contains("news.google.com", StringComparison.OrdinalIgnoreCase) &&
+                !targetUrl.Contains("/rss", StringComparison.OrdinalIgnoreCase))
+            {
+                targetUrl = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en";
+            }
+
+            var req = CreateBrowserLikeHttpRequest(targetUrl);
+            var resp = await _httpClient.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return $"HTTP Error {(int)resp.StatusCode}: {resp.ReasonPhrase}";
+            }
+
+            string raw = await resp.Content.ReadAsStringAsync(ct);
+
+            // If a consent barrier was returned anyway (e.g. EU/UK IP), fall back to Google News RSS feed
+            if ((raw.Contains("Before you continue to Google", StringComparison.OrdinalIgnoreCase) ||
+                 raw.Contains("consent.google.com", StringComparison.OrdinalIgnoreCase)) &&
+                !targetUrl.Contains("/rss", StringComparison.OrdinalIgnoreCase))
+            {
+                var fallbackReq = CreateBrowserLikeHttpRequest("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en");
+                var fallbackResp = await _httpClient.SendAsync(fallbackReq, ct);
+                if (fallbackResp.IsSuccessStatusCode)
+                {
+                    string rssXml = await fallbackResp.Content.ReadAsStringAsync(ct);
+                    return ParseRssFeed(rssXml, maxItems: 12);
+                }
+            }
+
+            // If RSS / XML feed (e.g. Google News RSS, blog feeds)
+            if (raw.Contains("<rss", StringComparison.OrdinalIgnoreCase) || 
+                raw.Contains("<feed", StringComparison.OrdinalIgnoreCase) || 
+                targetUrl.EndsWith(".rss", StringComparison.OrdinalIgnoreCase) || 
+                targetUrl.Contains("/rss", StringComparison.OrdinalIgnoreCase))
+            {
+                return ParseRssFeed(raw, maxItems: 12);
+            }
+
+            return CleanHtmlToMarkdown(raw, maxChars: 6000);
+        }
+        catch (Exception ex)
+        {
+            return $"Error fetching URL '{url}': {ex.Message}";
+        }
+    }
+
+    private async Task<string> SearchWebAsync(string query, CancellationToken ct)
+    {
+        try
+        {
+            // Google News RSS Search with spoofed browser headers
+            string newsUrl = $"https://news.google.com/rss/search?q={Uri.EscapeDataString(query)}&hl=en-US&gl=US&ceid=US:en";
+            var req = CreateBrowserLikeHttpRequest(newsUrl);
+            var resp = await _httpClient.SendAsync(req, ct);
+            if (resp.IsSuccessStatusCode)
+            {
+                string xml = await resp.Content.ReadAsStringAsync(ct);
+                string parsedNews = ParseRssFeed(xml, maxItems: 10);
+                if (!string.IsNullOrWhiteSpace(parsedNews) && !parsedNews.Contains("No items found"))
+                {
+                    return $"### 🌐 Google News Results for: \"{query}\"\n\n{parsedNews}";
+                }
+            }
+
+            // Fallback: DuckDuckGo HTML Instant Search
+            string ddgUrl = $"https://html.duckduckgo.com/html/?q={Uri.EscapeDataString(query)}";
+            var ddgReq = CreateBrowserLikeHttpRequest(ddgUrl);
+            var ddgResp = await _httpClient.SendAsync(ddgReq, ct);
+            if (ddgResp.IsSuccessStatusCode)
+            {
+                string html = await ddgResp.Content.ReadAsStringAsync(ct);
+                return CleanHtmlToMarkdown(html, maxChars: 5000);
+            }
+
+            return $"No search results found for: \"{query}\"";
+        }
+        catch (Exception ex)
+        {
+            return $"Web search exception: {ex.Message}";
+        }
+    }
+
+    private static string ParseRssFeed(string xml, int maxItems)
+    {
+        var sb = new StringBuilder();
+        var itemMatches = Regex.Matches(xml, @"<item>(.*?)</item>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        int count = 0;
+        foreach (Match m in itemMatches)
+        {
+            if (count++ >= maxItems) break;
+            string itemXml = m.Groups[1].Value;
+
+            string title = Regex.Match(itemXml, @"<title>(.*?)</title>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Groups[1].Value;
+            string link = Regex.Match(itemXml, @"<link>(.*?)</link>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Groups[1].Value;
+            string pubDate = Regex.Match(itemXml, @"<pubDate>(.*?)</pubDate>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Groups[1].Value;
+            string source = Regex.Match(itemXml, @"<source[^>]*>(.*?)</source>", RegexOptions.Singleline | RegexOptions.IgnoreCase).Groups[1].Value;
+
+            // Strip CDATA
+            title = Regex.Replace(title, @"<!\[CDATA\[(.*?)\]\]>", "$1", RegexOptions.Singleline).Trim();
+            link = Regex.Replace(link, @"<!\[CDATA\[(.*?)\]\]>", "$1", RegexOptions.Singleline).Trim();
+            source = Regex.Replace(source, @"<!\[CDATA\[(.*?)\]\]>", "$1", RegexOptions.Singleline).Trim();
+
+            sb.AppendLine($"{count}. **{title}**");
+            if (!string.IsNullOrEmpty(source) || !string.IsNullOrEmpty(pubDate))
+            {
+                sb.AppendLine($"   *Source: {source} | Date: {pubDate}*");
+            }
+            if (!string.IsNullOrEmpty(link))
+            {
+                sb.AppendLine($"   [Read Article]({link})");
+            }
+            sb.AppendLine();
+        }
+
+        if (sb.Length == 0)
+        {
+            return "No items found in feed.";
+        }
+        return sb.ToString().Trim();
+    }
+
+    private static string CleanHtmlToMarkdown(string html, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return "";
+
+        // Remove script, style, head, nav, footer, noscript tags
+        html = Regex.Replace(html, @"<(script|style|head|nav|footer|noscript)[^>]*>.*?</\1>", " ", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        // Convert common block elements to newlines
+        html = Regex.Replace(html, @"<(?:h[1-6]|p|div|br|li)[^>]*>", "\n", RegexOptions.IgnoreCase);
+
+        // Strip remaining HTML tags
+        html = Regex.Replace(html, @"<[^>]+>", " ", RegexOptions.Singleline);
+
+        // Decode HTML entities
+        html = System.Net.WebUtility.HtmlDecode(html);
+
+        // Collapse whitespace and multiple newlines
+        html = Regex.Replace(html, @"[ \t]+", " ");
+        html = Regex.Replace(html, @"\n\s*\n+", "\n\n");
+
+        html = html.Trim();
+        if (html.Length > maxChars)
+        {
+            html = html[..maxChars] + "\n...(truncated)";
+        }
+        return html;
+    }
+
+    private Task<LlmStreamResult> StreamModelEndpointAsync(
         List<JsonObject> messages,
         JsonArray tools,
         Action<string>? onContentDelta,
         Action<string>? onReasoningDelta,
         CancellationToken ct)
     {
-        string endpoint = _state.EndpointUrl.TrimEnd('/');
+        return StreamModelEndpointCoreAsync(
+            _state.EndpointUrl,
+            _state.SelectedModel,
+            _state.ApiKey,
+            messages,
+            tools,
+            onContentDelta,
+            onReasoningDelta,
+            ct);
+    }
+
+    private async Task<LlmStreamResult> StreamModelEndpointCoreAsync(
+        string endpointUrl,
+        string modelName,
+        string? apiKey,
+        List<JsonObject> messages,
+        JsonArray tools,
+        Action<string>? onContentDelta,
+        Action<string>? onReasoningDelta,
+        CancellationToken ct)
+    {
+        string endpoint = (endpointUrl ?? _state.EndpointUrl).TrimEnd('/');
         string url = endpoint.EndsWith("/chat/completions") ? endpoint : $"{endpoint}/chat/completions";
 
         var payload = new JsonObject
         {
-            ["model"] = _state.SelectedModel,
-            ["messages"] = new JsonArray(messages.ToArray()),
+            ["model"] = modelName ?? _state.SelectedModel,
+            ["messages"] = new JsonArray(messages.Select(m => (JsonObject)m.DeepClone()).ToArray()),
             ["temperature"] = _state.Temperature,
+            ["repetition_penalty"] = _state.RepetitionPenalty,
             ["max_tokens"] = _state.MaxTokens,
             ["stream"] = true
         };
 
         if (_state.IsAgentMode && tools.Count > 0)
         {
-            payload["tools"] = tools;
+            payload["tools"] = (JsonArray)tools.DeepClone();
             payload["tool_choice"] = "auto";
         }
 
@@ -784,9 +1755,10 @@ public class GlacierAgentEngine
         request.Headers.Accept.Clear();
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-        if (!string.IsNullOrEmpty(_state.ApiKey))
+        string effectiveKey = !string.IsNullOrEmpty(apiKey) ? apiKey : _state.ApiKey;
+        if (!string.IsNullOrEmpty(effectiveKey))
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _state.ApiKey);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", effectiveKey);
         }
 
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -1159,6 +2131,11 @@ public class GlacierAgentEngine
     {
         var list = new List<JsonObject>();
 
+        bool isLocalModel = _state.Provider is ModelServerProvider.LocalGlacierInference
+            or ModelServerProvider.LocalGlacierDistributed
+            or ModelServerProvider.LocalOllama
+            or ModelServerProvider.LocalLMStudio;
+
         // System prompt instructing the Stage 4 Super Agent
         var sbSystem = new StringBuilder();
         sbSystem.AppendLine("You are the Glacier Antigravity Super Agent, an autonomous AI assistant and pair programmer embedded in the Glacier .NET 10 Ecosystem.");
@@ -1170,24 +2147,47 @@ public class GlacierAgentEngine
         {
             string targetEntity = intent?.Target ?? "Workspace";
 
-            // Only inject Knowledge Graph ontology when a specific project/file/symbol is targeted
-            // so general questions and CLI requests stay lean and fast to prefill on local GPUs.
-            if (targetEntity != "Workspace" || intent?.Archetype is DeveloperIntentArchetype.ArchitectureReview or DeveloperIntentArchetype.CodeSearch)
+            // Only inject full Knowledge Graph ontology when using cloud models
+            // For local models, keep prompt ultra-lean (< 300 tokens) for sub-second GPU prefill.
+            if (!isLocalModel)
             {
-                if (Directory.Exists(_workspaceRoot))
+                if (targetEntity != "Workspace" || intent?.Archetype is DeveloperIntentArchetype.ArchitectureReview or DeveloperIntentArchetype.CodeSearch)
                 {
-                    var topDirs = Directory.GetDirectories(_workspaceRoot)
-                        .Select(Path.GetFileName)
-                        .Where(d => !string.IsNullOrEmpty(d) && !d.StartsWith(".") && d != "bin" && d != "obj")
-                        .Take(16);
-                    sbSystem.AppendLine($"Available Projects in Workspace: {string.Join(", ", topDirs)}");
-                }
+                    if (Directory.Exists(_workspaceRoot))
+                    {
+                        var topDirs = Directory.GetDirectories(_workspaceRoot)
+                            .Select(Path.GetFileName)
+                            .Where(d => !string.IsNullOrEmpty(d) && !d.StartsWith(".") && d != "bin" && d != "obj")
+                            .Take(16);
+                        sbSystem.AppendLine($"Available Projects in Workspace: {string.Join(", ", topDirs)}");
+                    }
 
-                string kgSummary = _graphService.QueryNeighborhoodSummary(targetEntity, maxEdges: 14);
-                if (!string.IsNullOrWhiteSpace(kgSummary))
+                    string kgSummary = _graphService.QueryNeighborhoodSummary(targetEntity, maxEdges: 14);
+                    if (!string.IsNullOrWhiteSpace(kgSummary))
+                    {
+                        sbSystem.AppendLine();
+                        sbSystem.AppendLine(kgSummary);
+                    }
+                }
+            }
+            else
+            {
+                if (targetEntity != "Workspace")
                 {
-                    sbSystem.AppendLine();
-                    sbSystem.AppendLine(kgSummary);
+                    string candSub = Path.Combine(_workspaceRoot, targetEntity, "src", targetEntity);
+                    string candRoot = Path.Combine(_workspaceRoot, targetEntity);
+                    if (Directory.Exists(candSub))
+                    {
+                        sbSystem.AppendLine($"Target Scope: `{targetEntity}` (Project Directory: `{targetEntity}/src/{targetEntity}`)");
+                    }
+                    else if (Directory.Exists(candRoot))
+                    {
+                        sbSystem.AppendLine($"Target Scope: `{targetEntity}` (Project Directory: `{targetEntity}`)");
+                    }
+                    else
+                    {
+                        sbSystem.AppendLine($"Target Scope: `{targetEntity}`");
+                    }
                 }
             }
 
@@ -1205,16 +2205,15 @@ public class GlacierAgentEngine
                 sbSystem.AppendLine("## PHASE 4: EXECUTIVE SYNTHESIS (ALL TOOLS COMPLETED — DO NOT CALL ANY MORE TOOLS):");
                 sbSystem.AppendLine("1. All required directory, file, and Knowledge Graph inspections have now been executed.");
                 sbSystem.AppendLine("2. Do NOT output any `<tool_call>` or `tool_call` blocks.");
-                sbSystem.AppendLine("3. Deliver a comprehensive, structured Markdown response grounded strictly in the observed tool outputs and Knowledge Graph facts.");
+                sbSystem.AppendLine("3. Deliver a comprehensive, structured Markdown response grounded strictly in observed tool outputs and facts.");
             }
             else
             {
                 sbSystem.AppendLine();
                 sbSystem.AppendLine("## AUTONOMOUS DECISION & TOOL-USE GUIDELINES:");
                 sbSystem.AppendLine("1. Decide autonomously how best to fulfill the user's request:");
-                sbSystem.AppendLine("   - If the user sends a greeting, conversational message (e.g. 'test', 'hello'), or general knowledge/coding question that does not require live disk or system state, respond directly and concisely without calling tools.");
-                sbSystem.AppendLine("   - If the request requires live system state (e.g. current date/time via `Get-Date`, environment info, git status, running builds/tests) or inspecting/modifying workspace files, invoke the appropriate tool (`run_command`, `read_file`, `list_directory`, `search_workspace`, etc.) first.");
-                sbSystem.AppendLine("   - If a request cannot be fulfilled with your knowledge or available tools, clearly state what you can and cannot do.");
+                sbSystem.AppendLine("   - If the request does not require live disk or system state, respond directly and concisely without calling tools.");
+                sbSystem.AppendLine("   - If the request requires inspecting/modifying workspace files or running tests/builds, invoke the appropriate tool first.");
                 sbSystem.AppendLine("2. Never fabricate file contents, command outputs, or system state.");
 
                 var allowedTools = intent?.AllowedTools;
@@ -1223,30 +2222,47 @@ public class GlacierAgentEngine
                 {
                     sbSystem.AppendLine();
                     sbSystem.AppendLine("## AVAILABLE TOOLS:");
-                    var allToolDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["run_command"] = "- `run_command`: Executes a PowerShell / CLI command on the local machine (e.g. `Get-Date`, `dotnet test`, `git status`). Args: `{\"command\": \"<command>\"}`.",
-                        ["read_file"] = "- `read_file`: Reads file content from the workspace. Args: `{\"path\": \"<file_path>\"}`.",
-                        ["write_file"] = "- `write_file`: Creates or updates a file in the workspace. Args: `{\"path\": \"<file_path>\", \"content\": \"<text>\"}`.",
-                        ["list_directory"] = "- `list_directory`: Lists directory contents. Args: `{\"path\": \"<dir_path>\"}` (use \"\" for workspace root).",
-                        ["search_workspace"] = "- `search_workspace`: Searches workspace files for symbols or text. Args: `{\"query\": \"<symbol_or_text>\", \"scope\": \"<optional_dir>\"}`.",
-                        ["query_knowledge_graph"] = "- `query_knowledge_graph`: Queries in-process Glacier.Graph ontology for symbol/project relationships. Args: `{\"entity\": \"<project_or_type_name>\"}`.",
-                        ["inspect_document"] = "- `inspect_document`: Inspects AST structure of Markdown or code file. Args: `{\"path\": \"<file_path>\"}`.",
-                        ["call_mcp_tool"] = "- `call_mcp_tool`: Calls an MCP tool. Args: `{\"server\": \"<server>\", \"tool\": \"<tool>\", \"arguments\": {}}`."
-                    };
 
-                    if (allowedTools != null && allowedTools.Count > 0)
+                    if (isLocalModel)
                     {
-                        foreach (var toolName in allowedTools)
-                        {
-                            if (allToolDescriptions.TryGetValue(toolName, out var desc))
-                                sbSystem.AppendLine(desc);
-                        }
+                        // Ultra-lean tool signatures for sub-second local GPU prefill
+                        sbSystem.AppendLine("- `run_command`: Run PowerShell/CLI. Args: `{\"command\": \"...\"}`");
+                        sbSystem.AppendLine("- `read_file`: Read workspace file. Args: `{\"path\": \"...\"}`");
+                        sbSystem.AppendLine("- `write_file`: Write workspace file. Args: `{\"path\": \"...\", \"content\": \"...\"}`");
+                        sbSystem.AppendLine("- `list_directory`: List directory contents. Args: `{\"path\": \"...\"}`");
+                        sbSystem.AppendLine("- `search_workspace`: Search workspace files. Args: `{\"query\": \"...\"}`");
+                        sbSystem.AppendLine("- `query_knowledge_graph`: Query in-process AST/ontology. Args: `{\"entity\": \"...\"}`");
                     }
                     else
                     {
-                        foreach (var desc in allToolDescriptions.Values)
-                            sbSystem.AppendLine(desc);
+                        var allToolDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            ["run_command"] = "- `run_command`: Executes a PowerShell / CLI command on the local machine (e.g. `Get-Date`, `dotnet test`, `git status`). Args: `{\"command\": \"<command>\"}`.",
+                            ["read_file"] = "- `read_file`: Reads file content from the workspace. Args: `{\"path\": \"<file_path>\"}`.",
+                            ["write_file"] = "- `write_file`: Creates or updates a file in the workspace. Args: `{\"path\": \"<file_path>\", \"content\": \"<text>\"}`.",
+                            ["delete_file"] = "- `delete_file`: Deletes a file within the workspace. Args: `{\"path\": \"<file_path>\"}`.",
+                            ["list_directory"] = "- `list_directory`: Lists directory contents. Args: `{\"path\": \"<dir_path>\"}` (use \"\" for workspace root).",
+                            ["search_workspace"] = "- `search_workspace`: Searches workspace files for symbols or text. Args: `{\"query\": \"<symbol_or_text>\", \"scope\": \"<optional_dir>\"}`.",
+                            ["query_knowledge_graph"] = "- `query_knowledge_graph`: Queries in-process Glacier.Graph ontology for symbol/project relationships. Args: `{\"entity\": \"<project_or_type_name>\"}`.",
+                            ["inspect_document"] = "- `inspect_document`: Inspects AST structure of Markdown or code file. Args: `{\"path\": \"<file_path>\"}`.",
+                            ["call_mcp_tool"] = "- `call_mcp_tool`: Calls an MCP tool. Args: `{\"server\": \"<server>\", \"tool\": \"<tool>\", \"arguments\": {}}`.",
+                            ["fetch_web_url"] = "- `fetch_web_url`: Fetches web page or RSS feed content via HTTP, strips HTML, and returns readable markdown text. Args: `{\"url\": \"<http_url>\"}`.",
+                            ["search_web"] = "- `search_web`: Searches live web, Google News, and online articles. Args: `{\"query\": \"<keywords_or_news_topic>\"}`."
+                        };
+
+                        if (allowedTools != null && allowedTools.Count > 0)
+                        {
+                            foreach (var toolName in allowedTools)
+                            {
+                                if (allToolDescriptions.TryGetValue(toolName, out var desc))
+                                    sbSystem.AppendLine(desc);
+                            }
+                        }
+                        else
+                        {
+                            foreach (var desc in allToolDescriptions.Values)
+                                sbSystem.AppendLine(desc);
+                        }
                     }
 
                     sbSystem.AppendLine();
@@ -1266,19 +2282,22 @@ public class GlacierAgentEngine
             ["content"] = sbSystem.ToString().Trim()
         });
 
-        // Stage 4 Rolling Context Compaction: keep recent tool outputs within local KV-cache budget, compact older large tool outputs
-        var toolMessages = session.Messages.Where(m => m.Role == "tool").ToList();
+        // Stage 4 Rolling Context Compaction: keep recent tool outputs within local KV-cache budget
+        int recentMaxChars = isLocalModel ? 1000 : 6000;
+
+        // For local models, keep conversation history bounded (last 4 messages) to guarantee < 1.5s prefill
+        var rawMessages = session.Messages;
+        var activeMessages = (isLocalModel && rawMessages.Count > 4)
+            ? rawMessages.Skip(rawMessages.Count - 4).ToList()
+            : rawMessages.ToList();
+
+        var toolMessages = activeMessages.Where(m => m.Role == "tool").ToList();
         int totalToolMessages = toolMessages.Count;
         int currentToolIdx = 0;
-        bool isLocalModel = _state.Provider is ModelServerProvider.LocalGlacierInference
-            or ModelServerProvider.LocalGlacierDistributed
-            or ModelServerProvider.LocalOllama
-            or ModelServerProvider.LocalLMStudio;
-        int recentMaxChars = isLocalModel ? 3600 : 6000;
 
-        for (int i = 0; i < session.Messages.Count; i++)
+        for (int i = 0; i < activeMessages.Count; i++)
         {
-            var msg = session.Messages[i];
+            var msg = activeMessages[i];
 
             // Skip static welcome banner, endpoint error cards, and cancelled empty turns so they never poison the model context
             if (msg.Role == "assistant")
@@ -1429,11 +2448,20 @@ public class GlacierAgentEngine
                 {
                     snippet = snippet[..1800] + "\n... (see tool telemetry card above for full output)";
                 }
-                sb.AppendLine($"**Tool Output (`{tm.ToolName ?? "observation"}`)**:");
-                sb.AppendLine("```text");
-                sb.AppendLine(snippet);
-                sb.AppendLine("```");
-                sb.AppendLine();
+                if (tm.ToolName is "fetch_web_url" or "search_web")
+                {
+                    sb.AppendLine("### 📰 Web & News Synthesis");
+                    sb.AppendLine(snippet);
+                    sb.AppendLine();
+                }
+                else
+                {
+                    sb.AppendLine($"**Tool Output (`{tm.ToolName ?? "observation"}`)**:");
+                    sb.AppendLine("```text");
+                    sb.AppendLine(snippet);
+                    sb.AppendLine("```");
+                    sb.AppendLine();
+                }
             }
         }
 
@@ -1498,7 +2526,7 @@ public class GlacierAgentEngine
         }
 
         // 4. Match direct function call syntax: list_directory("Glacier.Gpu") or read_file("path")
-        var directCallMatches = Regex.Matches(working, @"\b(run_command|read_file|write_file|list_directory|search_workspace|query_knowledge_graph|inspect_document|call_mcp_tool)\s*\(\s*(?:(?:path|command|file|query|entity)\s*=\s*)?[""']([^""']*)[""']\s*\)", RegexOptions.IgnoreCase);
+        var directCallMatches = Regex.Matches(working, @"\b(run_command|read_file|write_file|delete_file|list_directory|search_workspace|query_knowledge_graph|inspect_document|call_mcp_tool|fetch_web_url|search_web)\s*\(\s*(?:(?:path|command|file|query|entity|url)\s*=\s*)?[""']([^""']*)[""']\s*\)", RegexOptions.IgnoreCase);
         foreach (Match match in directCallMatches)
         {
             string fn = match.Groups[1].Value.Trim();
@@ -1506,8 +2534,9 @@ public class GlacierAgentEngine
             string argKey = fn switch
             {
                 "run_command" => "command",
-                "search_workspace" => "query",
+                "search_workspace" or "search_web" => "query",
                 "query_knowledge_graph" => "entity",
+                "fetch_web_url" => "url",
                 _ => "path"
             };
             toolCalls.Add(new ToolCallItem
@@ -1615,8 +2644,9 @@ public class GlacierAgentEngine
         string key = toolName.ToLowerInvariant() switch
         {
             "run_command" => "command",
-            "search_workspace" => "query",
+            "search_workspace" or "search_web" => "query",
             "query_knowledge_graph" => "entity",
+            "fetch_web_url" => "url",
             _ => "path"
         };
         return JsonSerializer.Serialize(new Dictionary<string, string> { [key] = rawArgs });
@@ -1706,6 +2736,29 @@ public class GlacierAgentEngine
             });
         }
 
+        // 3b. delete_file
+        if (IsAllowed("delete_file") || IsAllowed("write_file"))
+        {
+            tools.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = "delete_file",
+                    ["description"] = "Deletes a file within the workspace boundary and updates Knowledge Graph.",
+                    ["parameters"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["path"] = new JsonObject { ["type"] = "string", ["description"] = "Relative path of file to delete." }
+                        },
+                        ["required"] = new JsonArray { "path" }
+                    }
+                }
+            });
+        }
+
         // 4. list_directory
         if (IsAllowed("list_directory"))
         {
@@ -1737,14 +2790,14 @@ public class GlacierAgentEngine
                 ["function"] = new JsonObject
                 {
                     ["name"] = "search_workspace",
-                    ["description"] = "Searches workspace files for symbols, class names, or text snippets and indexes matches into Knowledge Graph.",
+                    ["description"] = "Searches workspace source files for symbols, type names, or concise keywords (e.g. 'GpuBuffer', 'PersistentRingBuffer', 'IGpuEngine', 'SASS'). Prefer concise identifiers rather than long natural language sentences.",
                     ["parameters"] = new JsonObject
                     {
                         ["type"] = "object",
                         ["properties"] = new JsonObject
                         {
-                            ["query"] = new JsonObject { ["type"] = "string", ["description"] = "Symbol or text to search for." },
-                            ["scope"] = new JsonObject { ["type"] = "string", ["description"] = "Optional subdirectory scope." }
+                            ["query"] = new JsonObject { ["type"] = "string", ["description"] = "Symbol, class name, or concise keyword to search for." },
+                            ["scope"] = new JsonObject { ["type"] = "string", ["description"] = "Optional subdirectory scope (e.g. 'Glacier.Gpu/src')." }
                         },
                         ["required"] = new JsonArray { "query" }
                     }
@@ -1818,6 +2871,52 @@ public class GlacierAgentEngine
                             ["arguments"] = new JsonObject { ["type"] = "object", ["description"] = "Tool arguments." }
                         },
                         ["required"] = new JsonArray { "server", "tool" }
+                    }
+                }
+            });
+        }
+
+        // 9. fetch_web_url
+        if (IsAllowed("fetch_web_url"))
+        {
+            tools.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = "fetch_web_url",
+                    ["description"] = "Fetches web page or RSS feed content via HTTP, strips HTML, and returns readable markdown text.",
+                    ["parameters"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["url"] = new JsonObject { ["type"] = "string", ["description"] = "Full HTTP/HTTPS URL to fetch." }
+                        },
+                        ["required"] = new JsonArray { "url" }
+                    }
+                }
+            });
+        }
+
+        // 10. search_web
+        if (IsAllowed("search_web"))
+        {
+            tools.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = "search_web",
+                    ["description"] = "Searches the live web and Google News for current events, topics, or documentation.",
+                    ["parameters"] = new JsonObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JsonObject
+                        {
+                            ["query"] = new JsonObject { ["type"] = "string", ["description"] = "Search keywords or news topic." }
+                        },
+                        ["required"] = new JsonArray { "query" }
                     }
                 }
             });

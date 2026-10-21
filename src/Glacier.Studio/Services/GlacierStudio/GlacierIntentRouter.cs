@@ -22,7 +22,8 @@ public enum DeveloperIntentArchetype
     DatabaseAndData = 8,
     DevOpsAndGit = 9,
     DocumentationAndSpecs = 10,
-    GeneralInquiry = 11
+    GeneralInquiry = 11,
+    WebResearchAndNews = 12
 }
 
 public sealed record AnalyzedDeveloperIntent
@@ -50,7 +51,7 @@ public sealed record StepSupervisionDecision
 
 /// <summary>
 /// Stage 4 System-1 Policy Router &amp; In-Flight Step Supervisor powered by Glacier.Clavier.
-/// Evaluates developer intent across 12 software engineering archetypes, gates dynamic skills,
+/// Evaluates developer intent across 13 software engineering archetypes, gates dynamic skills,
 /// and supervises ReAct turns in sub-millisecond turnaround.
 /// </summary>
 public static class GlacierIntentRouter
@@ -68,11 +69,14 @@ public static class GlacierIntentRouter
         "run_command",
         "read_file",
         "write_file",
+        "delete_file",
         "list_directory",
         "search_workspace",
         "query_knowledge_graph",
         "inspect_document",
-        "call_mcp_tool"
+        "call_mcp_tool",
+        "fetch_web_url",
+        "search_web"
     ];
 
     private static readonly (DeveloperIntentArchetype Archetype, string SemanticPrototype)[] s_archetypePrototypes =
@@ -88,7 +92,8 @@ public static class GlacierIntentRouter
         (DeveloperIntentArchetype.DatabaseAndData, "Query SQL database, inspect tables, schemas, stored procedures, migrations, data pipelines"),
         (DeveloperIntentArchetype.DevOpsAndGit, "Git status, commit history, branches, pull requests, CI/CD pipelines, Docker containers"),
         (DeveloperIntentArchetype.DocumentationAndSpecs, "Write or update documentation, README markdown, technical specifications, API docs"),
-        (DeveloperIntentArchetype.GeneralInquiry, "General question, conversational greeting, status check, system time, environment inquiry, or open request")
+        (DeveloperIntentArchetype.GeneralInquiry, "General question, conversational greeting, status check, system time, environment inquiry, or open request"),
+        (DeveloperIntentArchetype.WebResearchAndNews, "Search web, browse internet, Google News, latest news, read URL, fetch webpage, online headlines, current events, web articles")
     ];
 
     public static AnalyzedDeveloperIntent Analyze(string prompt, string workspaceRoot)
@@ -239,7 +244,7 @@ public static class GlacierIntentRouter
             @"(?:which (?:specific|file|aspect|part|component) would you like|would you like me to (?:proceed|continue|inspect|read)|shall i (?:proceed|inspect|read)|please let me know if you want me to inspect)",
             RegexOptions.IgnoreCase);
 
-        if (asksPermissionToContinue && sessionToolCount > 0 && sessionToolCount < 2 && intent.Target != "Workspace")
+        if (asksPermissionToContinue && sessionToolCount > 0 && sessionToolCount < 6 && intent.Target != "Workspace")
         {
             string nextDirective = BuildNextConcreteActionDirective(intent, memory, graphService);
             sw.Stop();
@@ -269,7 +274,7 @@ public static class GlacierIntentRouter
     {
         string target = intent.Target;
 
-        // If we listed a directory in Working Memory, find the highest-value unvisited file
+        // If we listed a directory in Working Memory, find the highest-value unvisited file (.md, .csproj, or .cs)
         if (memory.ListedDirectories.TryGetValue(target, out var entries) ||
             memory.ListedDirectories.Values.FirstOrDefault() is { } anyEntries && (entries = anyEntries) != null)
         {
@@ -277,13 +282,14 @@ public static class GlacierIntentRouter
                 ? target
                 : memory.ListedDirectories.Keys.First();
 
-            var readmeCandidate = entries.FirstOrDefault(e =>
+            var candidate = entries.FirstOrDefault(e =>
                 e.EndsWith("README.md", StringComparison.OrdinalIgnoreCase) ||
-                e.EndsWith(".md", StringComparison.OrdinalIgnoreCase));
+                e.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
+                (e.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) && !e.Contains("AssemblyInfo")));
 
-            if (!string.IsNullOrEmpty(readmeCandidate))
+            if (!string.IsNullOrEmpty(candidate))
             {
-                string cleanFile = readmeCandidate.Replace("[FILE] ", "").Trim();
+                string cleanFile = candidate.Replace("[FILE] ", "").Trim();
                 string fullRel = dirKey == "Workspace" ? cleanFile : $"{dirKey}/{cleanFile}";
                 if (!memory.InspectedFiles.ContainsKey(fullRel))
                 {
@@ -311,6 +317,15 @@ public static class GlacierIntentRouter
         string extractedTarget,
         ClavierDecisionResult clavierChoice)
     {
+        string pLower = prompt.ToLowerInvariant();
+        if (pLower.Contains("news") || pLower.Contains("http://") || pLower.Contains("https://") ||
+            pLower.Contains("google news") || pLower.Contains("search web") || pLower.Contains("browse") ||
+            pLower.Contains("latest headlines") || pLower.Contains("current events") || pLower.Contains("read url") ||
+            pLower.Contains("website") || pLower.Contains("article"))
+        {
+            return (DeveloperIntentArchetype.WebResearchAndNews, 0.96f);
+        }
+
         // Short conversational prompts, greetings, or general questions without a specific codebase target
         // default to GeneralInquiry so the model decides freely whether to answer directly or run a quick command.
         int wordCount = prompt.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Length;
@@ -468,6 +483,16 @@ public static class GlacierIntentRouter
   2. **Phase 2: Source Code Analysis**: Read key source files in `{target}` and synthesize findings.",
                 $"Proceed autonomously with the review of `{target}`.",
                 $"Review `{target}` using `list_directory` and `read_file` before writing your synthesis."
+            ),
+
+            DeveloperIntentArchetype.WebResearchAndNews => (
+                $@"### 🌐 Super Agent Web Research & News Plan
+{telemetryHeader}
+- **Execution Roadmap**:
+  1. **Phase 1: Live Web & News Retrieval**: Query live web, Google News, or documentation using `search_web` or read target URL using `fetch_web_url`.
+  2. **Phase 2: Content Synthesis**: Synthesize top news/web articles with title, source, and citations.",
+                $"Proceed autonomously with web search or URL retrieval for `{target}`.",
+                $"Use `search_web` or `fetch_web_url` to access live web information, Google News, or online articles."
             ),
 
             _ => (

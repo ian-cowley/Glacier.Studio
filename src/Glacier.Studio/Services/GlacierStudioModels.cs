@@ -14,6 +14,7 @@ public enum ModelServerProvider
     LocalOllama,
     LocalGlacierInference,
     LocalGlacierDistributed,
+    ClusterBeastCoder,
     LocalLMStudio,
     LocalCustom,
     RemoteGemini,
@@ -39,7 +40,7 @@ public class StudioSession
     public string Title { get; set; } = "New Conversation";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
-    public string ModelSnapshot { get; set; } = "Ollama: llama3.2";
+    public string ModelSnapshot { get; set; } = "Glacier: Grandmaster-14B";
     public List<ChatMessage> Messages { get; set; } = new();
     public int TotalTokensUsed { get; set; }
     public StudioWorkingMemory WorkingMemory { get; set; } = new();

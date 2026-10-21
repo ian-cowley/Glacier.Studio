@@ -520,6 +520,10 @@ public sealed class GlacierWorkspaceGraphService
                 if (file.Contains("\\bin\\", StringComparison.OrdinalIgnoreCase) ||
                     file.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase) ||
                     file.Contains("\\.git\\", StringComparison.OrdinalIgnoreCase) ||
+                    file.Contains("\\.glacier\\", StringComparison.OrdinalIgnoreCase) ||
+                    file.Contains("/.glacier/", StringComparison.OrdinalIgnoreCase) ||
+                    file.Contains("\\.vs\\", StringComparison.OrdinalIgnoreCase) ||
+                    file.Contains("/.vs/", StringComparison.OrdinalIgnoreCase) ||
                     file.Contains("\\BenchmarkDotNet.Artifacts\\", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -540,6 +544,27 @@ public sealed class GlacierWorkspaceGraphService
                 string content = File.ReadAllText(file);
                 string effectiveSearchTerm = query;
                 int idx = content.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+
+                if (idx < 0 && (query.Contains(' ') || query.Contains(',') || query.Contains(';')))
+                {
+                    var stopWords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "or", "and", "the", "for", "its", "project", "in", "of", "to", "a", "an", "is", "with", "breakdown", "details"
+                    };
+                    var terms = query.Split(new[] { ' ', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Where(t => t.Length >= 3 && !stopWords.Contains(t))
+                        .ToArray();
+
+                    foreach (var t in terms)
+                    {
+                        if (content.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            idx = content.IndexOf(t, StringComparison.OrdinalIgnoreCase);
+                            effectiveSearchTerm = t;
+                            break;
+                        }
+                    }
+                }
 
                 if (idx < 0 && !string.IsNullOrEmpty(containerHint) && !string.IsNullOrEmpty(memberTerm))
                 {

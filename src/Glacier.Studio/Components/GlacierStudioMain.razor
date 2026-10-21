@@ -3,6 +3,7 @@
 @using System.Net.Http.Headers
 @using System.Runtime.InteropServices
 @using System.Runtime.Intrinsics
+@using System.Text.RegularExpressions
 @using Glacier.Showcase.Services.GlacierStudio
 @using Glacier.Inference.Hardware
 @inject GlacierStudioState StudioState
@@ -106,6 +107,25 @@
                 <span class="gs-status-badge @StudioState.ExecutionStatus.ToString().ToLowerInvariant()">
                     @StudioState.StatusText
                 </span>
+                <div class="gs-header-model-picker" title="Switch active inference model on the fly">
+                    <span class="gs-status-dot @GetActiveProviderDotClass()"></span>
+                    <select class="gs-header-model-select" value="@StudioState.Provider.ToString()" @onchange="OnComposerModelChanged" title="Switch active model mid-conversation">
+                        <optgroup label="Heterogeneous Cluster">
+                            <option value="LocalGlacierDistributed">🏔️ Glacier Grandmaster (14B · 4060 + 890M)</option>
+                            <option value="ClusterBeastCoder">⚡ Beast Desktop (Qwen2.5-Coder-14B · RTX 3060)</option>
+                        </optgroup>
+                        <optgroup label="Local Engines">
+                            <option value="LocalGlacierInference">💻 Glacier.Inference (:5055)</option>
+                            <option value="LocalOllama">🦙 Ollama (:11434)</option>
+                            <option value="LocalLMStudio">🧪 LM Studio (:1234)</option>
+                        </optgroup>
+                        <optgroup label="Cloud &amp; Custom">
+                            <option value="RemoteGemini">☁️ Gemini 2.5</option>
+                            <option value="RemoteOpenAI">☁️ OpenAI</option>
+                            <option value="LocalCustom">🌐 Custom Endpoint</option>
+                        </optgroup>
+                    </select>
+                </div>
             </div>
             <div class="d-flex align-items-center gap-2">
                 <button class="gs-btn-export" @onclick='() => ExportSession("md")' title="Export thread to Markdown (.md)">
@@ -288,68 +308,125 @@
             }
         </div>
 
-        <!-- Antigravity-Style Unified Composer Box -->
+        <!-- Antigravity-Style Unified Composer Box with Slash Command Autocomplete -->
         <div class="gs-chat-input-bar">
-            <div class="gs-composer-box">
-                <textarea class="gs-textarea" 
-                          placeholder="Ask Glacier Agent to inspect, search, edit, build, or test..."
-                          @bind="CurrentInput"
-                          @bind:event="oninput"
-                          @onkeydown="HandleKeyDown"
-                          rows="2"></textarea>
-
-                <div class="gs-composer-footer">
-                    <div class="d-flex align-items-center gap-2">
-                        <button type="button" class="gs-composer-model-btn" @onclick='() => OpenSettingsModal("models")' title="Switch Model or Provider">
-                            <span class="gs-status-dot @GetActiveProviderDotClass()"></span>
-                            <span>@StudioState.GetModelDisplayName()</span>
-                            <span style="color:#6b7280; font-size:0.65rem;">▾</span>
-                        </button>
-                        @if (StudioState.Provider == ModelServerProvider.LocalGlacierInference && RuntimeLauncher.InferenceState != RuntimeHealthState.Online)
+            <div class="gs-slash-menu-container">
+                @if (_isSlashMenuOpen && _filteredSlashCommands.Count > 0)
+                {
+                    <div class="gs-slash-menu" id="slashMenuPopup">
+                        @for (int i = 0; i < _filteredSlashCommands.Count; i++)
                         {
-                            <button type="button" class="gs-runtime-quick-btn"
-                                    disabled="@(RuntimeLauncher.InferenceState == RuntimeHealthState.Starting)"
-                                    @onclick="() => RuntimeLauncher.StartInferenceServerAsync()"
-                                    title="Launch local Glacier.Inference server on :5055">
-                                @(RuntimeLauncher.InferenceState == RuntimeHealthState.Starting ? "Starting :5055..." : "▶ Start :5055")
-                            </button>
-                        }
-                        else if (StudioState.Provider == ModelServerProvider.LocalGlacierDistributed && RuntimeLauncher.DistributedState != RuntimeHealthState.Online)
-                        {
-                            <button type="button" class="gs-runtime-quick-btn"
-                                    disabled="@(RuntimeLauncher.DistributedState == RuntimeHealthState.Starting)"
-                                    @onclick="() => RuntimeLauncher.StartDistributedServerAsync()"
-                                    title="Launch local Glacier.Inference.Distributed on :8080">
-                                @(RuntimeLauncher.DistributedState == RuntimeHealthState.Starting ? "Starting :8080..." : "▶ Start :8080")
-                            </button>
-                        }
-                        <button type="button" class="gs-composer-util-btn"
-                                @onclick='() => OpenRightDrawerTab("telemetry")'
-                                title="Open Local Inference Runtimes &amp; Hardware panel">
-                            Runtimes
-                        </button>
-                        @if (StudioState.ActiveSession.Messages.Count > 1)
-                        {
-                            <button type="button" class="gs-composer-util-btn"
-                                    @onclick='() => ExecuteQuickActionAsync("/clear")'
-                                    title="Clear current conversation">
-                                Clear thread
-                            </button>
+                            var cmd = _filteredSlashCommands[i];
+                            int index = i;
+                            <div class="gs-slash-item @(index == _selectedSlashIndex ? "selected" : "")"
+                                 @onclick="() => SelectSlashCommand(cmd)"
+                                 @onmouseenter="() => _selectedSlashIndex = index">
+                                <span class="gs-slash-icon">
+                                    @((MarkupString)GetSlashIconSvg(cmd.IconType))
+                                </span>
+                                <span class="gs-slash-name">@cmd.Command</span>
+                                <span class="gs-slash-desc">@cmd.Description</span>
+                                @if (!string.IsNullOrEmpty(cmd.Category))
+                                {
+                                    <span class="gs-slash-category-tag">@cmd.Category</span>
+                                }
+                            </div>
                         }
                     </div>
+                }
 
-                    <div>
-                        @if (StudioState.ExecutionStatus == AgentExecutionStatus.Thinking || 
-                             StudioState.ExecutionStatus == AgentExecutionStatus.StreamingResponse || 
-                             StudioState.ExecutionStatus == AgentExecutionStatus.ExecutingTool || 
-                             StudioState.ExecutionStatus == AgentExecutionStatus.ExecutingTools)
-                        {
-                            <button class="gs-btn-stop" @onclick="CancelExecution">Stop</button>
-                        }
-                        else
-                        {
-                            <button class="gs-btn-send" @onclick="SendMessageAsync">Send ↵</button>
-                        }
+                <div class="gs-composer-box">
+                    <textarea class="gs-textarea" 
+                              placeholder="Ask Glacier Agent to inspect, search, edit, build, test... (type / for commands &amp; tools)"
+                              @bind="CurrentInput"
+                              @bind:event="oninput"
+                              @onkeydown="HandleKeyDown"
+                              rows="2"></textarea>
+
+                    <div class="gs-composer-footer">
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="gs-composer-model-picker" title="Switch active model mid-conversation">
+                                <span class="gs-status-dot @GetActiveProviderDotClass()"></span>
+                                <select class="gs-composer-model-select" value="@StudioState.Provider.ToString()" @onchange="OnComposerModelChanged" title="Switch active model mid-conversation">
+                                    <optgroup label="Heterogeneous Cluster">
+                                        <option value="LocalGlacierDistributed">🏔️ Glacier Grandmaster (14B · 4060 + 890M)</option>
+                                        <option value="ClusterBeastCoder">⚡ Beast Desktop (Qwen2.5-Coder-14B · RTX 3060)</option>
+                                    </optgroup>
+                                    <optgroup label="Local Engines">
+                                        <option value="LocalGlacierInference">💻 Glacier.Inference (:5055)</option>
+                                        <option value="LocalOllama">🦙 Ollama (:11434)</option>
+                                        <option value="LocalLMStudio">🧪 LM Studio (:1234)</option>
+                                    </optgroup>
+                                    <optgroup label="Cloud &amp; Custom">
+                                        <option value="RemoteGemini">☁️ Gemini 2.5</option>
+                                        <option value="RemoteOpenAI">☁️ OpenAI</option>
+                                        <option value="LocalCustom">🌐 Custom Endpoint</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <button type="button" class="gs-composer-util-btn" @onclick='() => OpenSettingsModal("models")' title="Advanced Model &amp; Endpoint Settings">
+                                ⚙
+                            </button>
+                            @if (StudioState.Provider == ModelServerProvider.LocalGlacierInference && RuntimeLauncher.InferenceState != RuntimeHealthState.Online)
+                            {
+                                <button type="button" class="gs-runtime-quick-btn"
+                                        disabled="@(RuntimeLauncher.InferenceState == RuntimeHealthState.Starting)"
+                                        @onclick="() => RuntimeLauncher.StartInferenceServerAsync()"
+                                        title="Launch local Glacier.Inference server on :5055">
+                                    @(RuntimeLauncher.InferenceState == RuntimeHealthState.Starting ? "Starting :5055..." : "▶ Start :5055")
+                                </button>
+                            }
+                            else if (StudioState.Provider == ModelServerProvider.LocalGlacierDistributed && RuntimeLauncher.DistributedState != RuntimeHealthState.Online)
+                            {
+                                <button type="button" class="gs-runtime-quick-btn"
+                                        disabled="@(RuntimeLauncher.DistributedState == RuntimeHealthState.Starting)"
+                                        @onclick="() => RuntimeLauncher.StartDistributedServerAsync()"
+                                        title="Launch local Glacier.Inference.Distributed on :8080">
+                                    @(RuntimeLauncher.DistributedState == RuntimeHealthState.Starting ? "Starting :8080..." : "▶ Start :8080")
+                                </button>
+                            }
+                            else if (StudioState.Provider == ModelServerProvider.ClusterBeastCoder && RuntimeLauncher.BeastClusterState != RuntimeHealthState.Online)
+                            {
+                                <button type="button" class="gs-runtime-quick-btn"
+                                        disabled="@(RuntimeLauncher.BeastClusterState == RuntimeHealthState.Starting)"
+                                        @onclick="() => RuntimeLauncher.StartBeastRemoteServerAsync()"
+                                        title="Start remote Qwen-Coder daemon on Beast Desktop">
+                                    @(RuntimeLauncher.BeastClusterState == RuntimeHealthState.Starting ? "Starting Beast..." : "▶ Start Beast")
+                                </button>
+                            }
+                            <button type="button" class="gs-composer-util-btn"
+                                    @onclick='() => OpenRightDrawerTab("telemetry")'
+                                    title="Open Local Inference Runtimes &amp; Hardware panel">
+                                Runtimes
+                            </button>
+                            <button type="button" class="gs-composer-util-btn"
+                                    @onclick='() => SetInput("/team ")'
+                                    title="Run Heterogeneous Agent Team (Host Architect + Beast Coder)">
+                                🚀 Team
+                            </button>
+                            @if (StudioState.ActiveSession.Messages.Count > 1)
+                            {
+                                <button type="button" class="gs-composer-util-btn"
+                                        @onclick='() => ExecuteQuickActionAsync("/clear")'
+                                        title="Clear current conversation">
+                                    Clear thread
+                                </button>
+                            }
+                        </div>
+
+                        <div>
+                            @if (StudioState.ExecutionStatus == AgentExecutionStatus.Thinking || 
+                                 StudioState.ExecutionStatus == AgentExecutionStatus.StreamingResponse || 
+                                 StudioState.ExecutionStatus == AgentExecutionStatus.ExecutingTool || 
+                                 StudioState.ExecutionStatus == AgentExecutionStatus.ExecutingTools)
+                            {
+                                <button class="gs-btn-stop" @onclick="CancelExecution">Stop</button>
+                            }
+                            else
+                            {
+                                <button class="gs-btn-send" @onclick="SendMessageAsync">Send ↵</button>
+                            }
+                        </div>
                     </div>
                 </div>
             </div>
@@ -844,6 +921,44 @@
                             </div>
                         </div>
 
+                        <!-- Card 3: Beast Desktop Cluster Node (RTX 3060 12GB - Qwen2.5-Coder-14B) -->
+                        <div class="gs-runtime-card">
+                            <div class="gs-runtime-header">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="gs-runtime-dot @GetHealthDotClass(RuntimeLauncher.BeastClusterState)"></span>
+                                    <span class="gs-runtime-title">Glacier Beast Cluster Node</span>
+                                    <span class="gs-runtime-badge">Remote LAN · RTX 3060 12GB</span>
+                                </div>
+                                <span class="gs-runtime-status-detail">@RuntimeLauncher.BeastClusterStatusDetail</span>
+                            </div>
+                            <div class="gs-runtime-desc">Dedicated remote node on Beast Desktop running Qwen2.5-Coder-14B for high-throughput coding tasks (10–14 tok/s).</div>
+                            <div class="gs-runtime-actions">
+                                <span class="gs-runtime-meta">LAN: <code>http://192.168.1.108:8080/v1</code> · Model: <code>@(string.IsNullOrEmpty(RuntimeLauncher.BeastClusterActiveModel) ? "qwen2.5-coder-14b" : RuntimeLauncher.BeastClusterActiveModel)</code></span>
+                                <div class="d-flex align-items-center gap-2">
+                                    @if (RuntimeLauncher.BeastClusterState == RuntimeHealthState.Online)
+                                    {
+                                        @if (StudioState.Provider != ModelServerProvider.ClusterBeastCoder)
+                                        {
+                                            <button class="gs-runtime-btn use" @onclick="() => RuntimeLauncher.ActivateBeastInStudio()">Use Active</button>
+                                        }
+                                        else
+                                        {
+                                            <span class="gs-runtime-active-tag">Active</span>
+                                        }
+                                        <button class="gs-runtime-btn stop" @onclick="() => RuntimeLauncher.StopBeastRemoteServerAsync()">Stop</button>
+                                    }
+                                    else
+                                    {
+                                        <button class="gs-runtime-btn start"
+                                                disabled="@(RuntimeLauncher.BeastClusterState == RuntimeHealthState.Starting)"
+                                                @onclick="() => RuntimeLauncher.StartBeastRemoteServerAsync()">
+                                            @(RuntimeLauncher.BeastClusterState == RuntimeHealthState.Starting ? "Starting..." : "Start Remote Beast")
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="gs-section-label" style="margin-top: 8px; margin-bottom: 2px;">Performance &amp; Telemetry</div>
                         <div class="gs-stat-grid">
                             <div class="gs-stat-card">
@@ -976,8 +1091,9 @@
                                     <div class="gs-form-group">
                                         <label class="gs-form-label">PROVIDER</label>
                                         <select class="gs-select" @onchange="OnProviderChanged">
+                                            <option value="LocalGlacierDistributed" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierDistributed)">Glacier Host Dual-GPU (DeepSeek-R1-14B :8080)</option>
+                                            <option value="ClusterBeastCoder" selected="@(StudioState.Provider == ModelServerProvider.ClusterBeastCoder)">Glacier Beast Cluster (Qwen2.5-Coder-14B on 192.168.1.108:8080)</option>
                                             <option value="LocalGlacierInference" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierInference)">Local Glacier.Inference (5055)</option>
-                                            <option value="LocalGlacierDistributed" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierDistributed)">Local Glacier.Inference.Distributed (8080)</option>
                                             <option value="LocalOllama" selected="@(StudioState.Provider == ModelServerProvider.LocalOllama)">Local Ollama (11434)</option>
                                             <option value="LocalLMStudio" selected="@(StudioState.Provider == ModelServerProvider.LocalLMStudio)">Local LM Studio (1234)</option>
                                             <option value="RemoteGemini" selected="@(StudioState.Provider == ModelServerProvider.RemoteGemini)">Cloud Gemini (Google AI)</option>
@@ -1119,7 +1235,34 @@
 </div>
 
 @code {
-    private string CurrentInput { get; set; } = "";
+    public sealed record SlashOption(
+        string Command,
+        string Description,
+        string IconType,
+        string Category
+    );
+
+    private string _currentInput = "";
+    private string CurrentInput
+    {
+        get => _currentInput;
+        set
+        {
+            if (_currentInput != value)
+            {
+                _currentInput = value;
+                UpdateSlashCommandState();
+            }
+        }
+    }
+
+    private bool _isSlashMenuOpen = false;
+    private int _selectedSlashIndex = 0;
+    private string _slashQuery = "";
+    private List<SlashOption> _allSlashCommands = new();
+    private List<SlashOption> _filteredSlashCommands = new();
+    private static readonly Regex SlashQueryRegex = new Regex(@"(?:^|\s)/([a-zA-Z0-9_\-:]*)$", RegexOptions.Compiled);
+
     private string UserConsoleCommand { get; set; } = "";
     private string GraphQueryInput { get; set; } = "Workspace";
     private string ExportNotification { get; set; } = "";
@@ -1143,6 +1286,8 @@
         ConsoleService.OnLogAdded += HandleStateChanged;
         DocPreviewService.OnDocumentChanged += HandleStateChanged;
         RuntimeLauncher.OnRuntimeStateChanged += HandleStateChanged;
+
+        RefreshSlashCommands();
 
         _liveTurnTimer = new System.Timers.Timer(100);
         _liveTurnTimer.Elapsed += (_, _) =>
@@ -1185,6 +1330,10 @@
         if (StudioState.Provider == ModelServerProvider.LocalGlacierDistributed)
         {
             return GetHealthDotClass(RuntimeLauncher.DistributedState);
+        }
+        if (StudioState.Provider == ModelServerProvider.ClusterBeastCoder)
+        {
+            return GetHealthDotClass(RuntimeLauncher.BeastClusterState);
         }
         return "online";
     }
@@ -1242,8 +1391,12 @@
         if (Enum.TryParse<ModelServerProvider>(e.Value?.ToString(), out var provider))
         {
             StudioState.SetProvider(provider);
+            ConsoleService.AddLog("SYSTEM", $"In-flight model switched to: {StudioState.GetModelDisplayName()} ({StudioState.EndpointUrl})");
+            StateHasChanged();
         }
     }
+
+    private void OnComposerModelChanged(ChangeEventArgs e) => OnProviderChanged(e);
 
     private void OnModelPresetSelected(ChangeEventArgs e)
     {
@@ -1505,11 +1658,138 @@
 
     private async Task HandleKeyDown(KeyboardEventArgs e)
     {
+        if (_isSlashMenuOpen && _filteredSlashCommands.Count > 0)
+        {
+            if (e.Key == "ArrowDown")
+            {
+                _selectedSlashIndex = (_selectedSlashIndex + 1) % _filteredSlashCommands.Count;
+                StateHasChanged();
+                return;
+            }
+            if (e.Key == "ArrowUp")
+            {
+                _selectedSlashIndex = (_selectedSlashIndex - 1 + _filteredSlashCommands.Count) % _filteredSlashCommands.Count;
+                StateHasChanged();
+                return;
+            }
+            if (e.Key == "Enter" || e.Key == "Tab")
+            {
+                SelectSlashCommand(_filteredSlashCommands[_selectedSlashIndex]);
+                return;
+            }
+            if (e.Key == "Escape")
+            {
+                _isSlashMenuOpen = false;
+                StateHasChanged();
+                return;
+            }
+        }
+
         if (e.Key == "Enter" && !e.ShiftKey)
         {
             await SendMessageAsync();
         }
     }
+
+    private void RefreshSlashCommands()
+    {
+        var list = new List<SlashOption>
+        {
+            new("btw", "Ask a quick question without interrupting the main conversation", "btw", "General"),
+            new("team", "Run autonomous heterogeneous agent team across Host + Beast", "team", "Cluster"),
+            new("goal", "Run until the specified goal is completely finished", "goal", "Agent"),
+            new("plan", "Plan carefully before executing a task", "plan", "Agent"),
+            new("compact", "Compact the conversation now (summarize history to free up context)", "compact", "Context"),
+            new("terminal", "Directly run a shell command in the interactive terminal", "terminal", "Tools"),
+            new("inspect", "Inspect and preview any workspace file with Glacier.DocTree AST", "inspect", "Tools"),
+            new("graph", "Query the Glacier.Graph Knowledge Graph ontology", "graph", "Knowledge"),
+            new("browser", "Invoke a web inspection & research agent for online tasks", "browser", "Web"),
+            new("schedule", "Run an instruction on a recurring schedule or as a one-time timer", "schedule", "Automation"),
+            new("grill-me", "Interview me through an interactive session to align on a plan", "btw", "Agent"),
+            new("mcp", "List all connected MCP servers and available tools", "mcp", "MCP"),
+            new("settings", "Configure model servers, endpoints, API keys, and MCP tools", "settings", "Settings"),
+            new("runtimes", "Open Local Inference Runtimes & Hardware telemetry panel", "runtimes", "Telemetry"),
+            new("clear", "Clear conversation history and session working memory", "clear", "Session")
+        };
+
+        foreach (var server in McpManager.Servers)
+        {
+            foreach (var tool in server.AvailableTools)
+            {
+                list.Add(new SlashOption(
+                    $"mcp:{server.Name}:{tool}",
+                    $"Execute '{tool}' via {server.Name} MCP server",
+                    "mcp",
+                    server.Name
+                ));
+            }
+        }
+
+        _allSlashCommands = list;
+    }
+
+    private void UpdateSlashCommandState()
+    {
+        if (string.IsNullOrEmpty(_currentInput))
+        {
+            _isSlashMenuOpen = false;
+            return;
+        }
+
+        var match = SlashQueryRegex.Match(_currentInput);
+        if (match.Success)
+        {
+            _slashQuery = match.Groups[1].Value;
+            _filteredSlashCommands = _allSlashCommands
+                .Where(c => c.Command.Contains(_slashQuery, StringComparison.OrdinalIgnoreCase) ||
+                            c.Description.Contains(_slashQuery, StringComparison.OrdinalIgnoreCase) ||
+                            c.Category.Contains(_slashQuery, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(c => c.Command.StartsWith(_slashQuery, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(c => c.Command)
+                .ToList();
+
+            _selectedSlashIndex = Math.Clamp(_selectedSlashIndex, 0, Math.Max(0, _filteredSlashCommands.Count - 1));
+            _isSlashMenuOpen = _filteredSlashCommands.Count > 0;
+        }
+        else
+        {
+            _isSlashMenuOpen = false;
+        }
+    }
+
+    private void SelectSlashCommand(SlashOption cmd)
+    {
+        var match = SlashQueryRegex.Match(_currentInput);
+        if (match.Success)
+        {
+            int slashPos = match.Index + (match.Value.StartsWith(" ") ? 1 : 0);
+            _currentInput = _currentInput.Substring(0, slashPos) + "/" + cmd.Command + " ";
+        }
+        else
+        {
+            _currentInput = "/" + cmd.Command + " ";
+        }
+        _isSlashMenuOpen = false;
+        StateHasChanged();
+    }
+
+    private static string GetSlashIconSvg(string iconType) => iconType switch
+    {
+        "team" => @"<svg viewBox=""0 0 24 24""><path d=""M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2""/><circle cx=""9"" cy=""7"" r=""4""/><path d=""M23 21v-2a4 4 0 0 0-3-3.87""/><path d=""M16 3.13a4 4 0 0 1 0 7.75""/></svg>",
+        "goal" => @"<svg viewBox=""0 0 24 24""><circle cx=""12"" cy=""12"" r=""10""/><circle cx=""12"" cy=""12"" r=""6""/><circle cx=""12"" cy=""12"" r=""2""/></svg>",
+        "plan" => @"<svg viewBox=""0 0 24 24""><path d=""M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2""/><rect x=""8"" y=""2"" width=""8"" height=""4"" rx=""1"" ry=""1""/><path d=""M9 14h6""/><path d=""M9 18h6""/><path d=""M9 10h6""/></svg>",
+        "compact" => @"<svg viewBox=""0 0 24 24""><polyline points=""4 14 10 14 10 20""/><polyline points=""20 10 14 10 14 4""/><line x1=""14"" y1=""10"" x2=""21"" y2=""3""/><line x1=""3"" y1=""21"" x2=""10"" y2=""14""/></svg>",
+        "btw" => @"<svg viewBox=""0 0 24 24""><path d=""M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z""/></svg>",
+        "terminal" => @"<svg viewBox=""0 0 24 24""><polyline points=""4 17 10 11 4 5""/><line x1=""12"" y1=""19"" x2=""20"" y2=""19""/></svg>",
+        "inspect" => @"<svg viewBox=""0 0 24 24""><path d=""M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z""/><polyline points=""14 2 14 8 20 8""/><line x1=""16"" y1=""13"" x2=""8"" y2=""13""/><line x1=""16"" y1=""17"" x2=""8"" y2=""17""/></svg>",
+        "graph" => @"<svg viewBox=""0 0 24 24""><circle cx=""6"" cy=""6"" r=""3""/><circle cx=""18"" cy=""18"" r=""3""/><circle cx=""6"" cy=""18"" r=""3""/><line x1=""8.5"" y1=""7.5"" x2=""15.5"" y2=""16.5""/><line x1=""6"" y1=""9"" x2=""6"" y2=""15""/></svg>",
+        "browser" => @"<svg viewBox=""0 0 24 24""><circle cx=""12"" cy=""12"" r=""10""/><line x1=""2"" y1=""12"" x2=""22"" y2=""12""/><path d=""M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z""/></svg>",
+        "schedule" => @"<svg viewBox=""0 0 24 24""><circle cx=""12"" cy=""12"" r=""10""/><polyline points=""12 6 12 12 16 14""/></svg>",
+        "settings" => @"<svg viewBox=""0 0 24 24""><circle cx=""12"" cy=""12"" r=""3""/><path d=""M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z""/></svg>",
+        "runtimes" => @"<svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""2""><polyline points=""22 12 18 12 15 21 9 3 6 12 2 12""/></svg>",
+        "clear" => @"<svg viewBox=""0 0 24 24"" fill=""none"" stroke=""currentColor"" stroke-width=""2""><polyline points=""3 6 5 6 21 6""/><path d=""M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2""/></svg>",
+        _ => @"<svg viewBox=""0 0 24 24""><rect x=""2"" y=""2"" width=""20"" height=""8"" rx=""2"" ry=""2""/><rect x=""2"" y=""14"" width=""20"" height=""8"" rx=""2"" ry=""2""/><line x1=""6"" y1=""6"" x2=""6.01"" y2=""6""/><line x1=""6"" y1=""18"" x2=""6.01"" y2=""18""/></svg>"
+    };
 
     private void OpenSettingsModal(string tab = "models")
     {
@@ -1526,6 +1806,7 @@
     private void ReloadMcpServers()
     {
         McpManager.DiscoverConfiguredServers();
+        RefreshSlashCommands();
         StateHasChanged();
     }
 
@@ -1611,7 +1892,10 @@
         string thought = msg.ThinkingContent ?? "";
         string content = msg.Content ?? "";
 
-        // Check if content itself contains <think> ... </think> tags
+        // Strip special tokens like <｜end of sentence｜> or <｜end▁of▁sentence｜>
+        content = Regex.Replace(content, @"<｜[^>]+｜>", "").Trim();
+
+        // Case 1: Both <think> and </think> present
         if (content.Contains("<think>", StringComparison.OrdinalIgnoreCase))
         {
             int start = content.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
@@ -1636,6 +1920,17 @@
                 }
                 content = content.Substring(0, start).Trim();
             }
+        }
+        // Case 2: DeepSeek-R1 starts in thinking mode and only outputs </think>!
+        else if (content.Contains("</think>", StringComparison.OrdinalIgnoreCase))
+        {
+            int end = content.IndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+            string tagThought = content.Substring(0, end).Trim();
+            if (string.IsNullOrEmpty(thought))
+            {
+                thought = tagThought;
+            }
+            content = content.Substring(end + 8).Trim();
         }
 
         return (content, thought);

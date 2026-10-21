@@ -921,6 +921,47 @@ input, textarea, select, button {
     color: var(--text-primary);
 }
 
+/* In-Flight Model Selector (Header & Composer) */
+.gs-header-model-picker,
+.gs-composer-model-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 3px 8px;
+    transition: all 0.15s ease;
+}
+
+.gs-header-model-picker:hover,
+.gs-composer-model-picker:hover,
+.gs-composer-model-picker:focus-within {
+    border-color: var(--border-focus);
+    background-color: var(--bg-hover);
+}
+
+.gs-header-model-select,
+.gs-composer-model-select {
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 0.76rem;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: inherit;
+    padding: 1px 4px;
+}
+
+.gs-header-model-select option,
+.gs-composer-model-select option,
+.gs-header-model-select optgroup,
+.gs-composer-model-select optgroup {
+    background-color: #1e2430;
+    color: #e5e7eb;
+}
+
 .gs-composer-util-btn {
     background: transparent;
     border: none;
@@ -2156,5 +2197,101 @@ input, textarea, select, button {
     white-space: nowrap;
     overflow-x: auto;
 }
+
+/* ==========================================================================
+   Antigravity-Style Slash Command Autocomplete Popup Menu
+   ========================================================================== */
+.gs-slash-menu-container {
+    position: relative;
+    width: 100%;
+}
+
+.gs-slash-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    background-color: #18181b;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.55), 0 4px 14px rgba(0, 0, 0, 0.35);
+    max-height: 290px;
+    overflow-y: auto;
+    z-index: 1050;
+    padding: 6px 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.gs-slash-menu::-webkit-scrollbar {
+    width: 6px;
+}
+
+.gs-slash-menu::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+}
+
+.gs-slash-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 14px;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.1s ease;
+}
+
+.gs-slash-item:hover,
+.gs-slash-item.selected {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.gs-slash-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: #9ca3af;
+    flex-shrink: 0;
+}
+
+.gs-slash-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+}
+
+.gs-slash-name {
+    font-family: "JetBrains Mono", Consolas, monospace;
+    font-size: 0.83rem;
+    font-weight: 600;
+    color: #f3f4f6;
+    flex-shrink: 0;
+}
+
+.gs-slash-desc {
+    font-size: 0.77rem;
+    color: #9ca3af;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+
+.gs-slash-category-tag {
+    font-size: 0.62rem;
+    color: #6b7280;
+    background-color: rgba(255, 255, 255, 0.05);
+    padding: 1px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
 
 

@@ -77,7 +77,8 @@ public class Program
                 sp.GetRequiredService<GlacierConsoleService>(),
                 sp.GetRequiredService<GlacierDocTreePreviewService>(),
                 sp.GetRequiredService<GlacierMcpManager>(),
-                sp.GetRequiredService<GlacierWorkspaceGraphService>()));
+                sp.GetRequiredService<GlacierWorkspaceGraphService>(),
+                sp.GetRequiredService<GlacierRuntimeLauncherService>()));
 
         // Root Component
         appBuilder.RootComponents.Add<App>("#app");
