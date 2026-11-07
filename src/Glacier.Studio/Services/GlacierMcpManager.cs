@@ -22,6 +22,7 @@ public class GlacierMcpManager : IAsyncDisposable, IDisposable
     private readonly string _workspaceRoot;
     private bool _isDisposed = false;
 
+    public bool IsDisposed => _isDisposed;
     public IReadOnlyList<McpServerDefinition> Servers => _servers;
 
     public GlacierMcpManager(string? workspaceRoot = null)

@@ -115,7 +115,7 @@ graph TD
 
 ### 🚀 2. Turnkey Local & Distributed Inference Runtime Launcher
 Located in the **System** tab of the right drawer ([`GlacierRuntimeLauncherService.cs`](src/Glacier.Studio/Services/GlacierStudio/GlacierRuntimeLauncherService.cs)):
-- **Automatic GGUF Model Discovery**: Scans local model directories (`D:\lmstudio\models`, `~/.lmstudio/models`, `./models`) and prioritizes models that fit cleanly in dedicated GPU VRAM for sub-second prefill.
+- **Automatic GGUF Model Discovery**: Scans configured model directories (`$GLACIER_MODELS_DIR`, `~/.glacier/models`, `$LMSTUDIO_MODELS_DIR`, `~/.lmstudio/models`, `./models`) and prioritizes models that fit cleanly in dedicated GPU VRAM for sub-second prefill.
 - **Single-Node `Glacier.Inference` Card (`:5055`)**:
   - Configure **Device (`--device`)**, **Engine (`--engine`)** (`baremetal`, `cuda`, `vulkan`, `directcompute`, `cpu`), **HTTP Port (`--port`)**, and **Context Window (`--ctx`)**.
   - One-click **Start Server**, **Use Active**, and **Stop** controls with live millisecond health probes.
@@ -147,8 +147,8 @@ Pre-compiled standalone archives are published on the **[GitHub Releases](https:
 
 | Platform | Architecture | Archive | Executable |
 | :--- | :--- | :--- | :--- |
-| **Windows** | `x64` | `glacier-studio-v1.0.0-win-x64.zip` | `Glacier.Studio.exe` |
-| **Windows** | `ARM64` | `glacier-studio-v1.0.0-win-arm64.zip` | `Glacier.Studio.exe` |
+| **Windows** | `x64` | `glacier-studio-v1.1.0-win-x64.zip` | `Glacier.Studio.exe` |
+| **Windows** | `ARM64` | `glacier-studio-v1.1.0-win-arm64.zip` | `Glacier.Studio.exe` |
 
 ### Option 2: Build and Run from Source (.NET 10 SDK)
 
@@ -161,7 +161,7 @@ cd Glacier.Studio
 dotnet run --project src/Glacier.Studio/Glacier.Studio.csproj -c Release
 ```
 
-> **Note**: When cloned alongside the sister Glacier repositories in a shared parent directory, `Glacier.Studio.csproj` automatically links via live `<ProjectReference>`s; when cloned standalone, it automatically resolves the published `Glacier.*` NuGet packages.
+> **Note**: `Glacier.Studio` resolves all `Glacier.*` dependencies via NuGet packages (`Glacier.Inference 1.3.2`, `Glacier.DocTree 1.2.0`, `Glacier.Clavier 1.1.0`, `Glacier.Graph 1.1.0`, `Glacier.Gpu 1.1.0`, `Glacier.Polaris 1.1.0`, `Glacier.Vector 1.1.0`, `Glacier.AgentDevKit.Adk 1.1.0`, `TinyPdf 0.2.0`).
 
 ---
 

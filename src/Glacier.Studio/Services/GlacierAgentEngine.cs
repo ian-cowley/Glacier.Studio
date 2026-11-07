@@ -112,12 +112,15 @@ public class GlacierAgentEngine
                 {
                     Role = "assistant",
                     Content = @"### ⚡ Glacier Super Agent Studio Slash Commands
+- `/help`: Show available studio slash commands and usage guide.
 - `/team <objective>`: Run autonomous heterogeneous agent team across Host (DeepSeek-R1) + Beast (Qwen-Coder).
 - `/terminal <command>`: Directly run shell command in the interactive console.
 - `/inspect <filepath>`: Load and preview any workspace file in the Glacier.DocTree viewer.
 - `/graph [entity]`: Query the in-process `Glacier.Graph` Knowledge Graph ontology.
 - `/mcp`: List all connected MCP servers and available tools.
 - `/clear`: Clear message history and working memory in the current session.
+- `/reset`: Reset conversation state and session working memory.
+- `/status`: Inspect active model, session state, and engine status.
 - `/plan <objective>`: Formulate a multi-step structured engineering execution plan.
 - `/goal <objective>`: Run autonomous goal-directed ReAct agent task.",
                     Timestamp = DateTime.Now
@@ -125,12 +128,30 @@ public class GlacierAgentEngine
                 break;
 
             case "/clear":
+            case "/reset":
                 session.Messages.Clear();
                 session.WorkingMemory = new StudioWorkingMemory();
                 session.Messages.Add(new ChatMessage
                 {
                     Role = "assistant",
                     Content = "Conversation history and session working memory cleared. Ready for your instructions.",
+                    Timestamp = DateTime.Now
+                });
+                break;
+
+            case "/status":
+                var activeModel = _state.SelectedModel ?? "Default";
+                var statusReport = $"### 📊 Glacier Studio Status\n" +
+                                   $"- **Session**: `{session.Title}` (ID: `{session.Id}`)\n" +
+                                   $"- **Active Model**: `{activeModel}` (Provider: `{_state.Provider}`)\n" +
+                                   $"- **Execution Status**: `{_state.ExecutionStatus}`\n" +
+                                   $"- **Messages in History**: {session.Messages.Count}\n" +
+                                   $"- **MCP Servers**: {_mcpManager.Servers.Count} configured\n" +
+                                   $"- **Agent Mode**: {(_state.IsAgentMode ? "Enabled (Multi-Turn ReAct)" : "Disabled (Direct Chat)")}";
+                session.Messages.Add(new ChatMessage
+                {
+                    Role = "assistant",
+                    Content = statusReport,
                     Timestamp = DateTime.Now
                 });
                 break;
@@ -218,12 +239,7 @@ public class GlacierAgentEngine
                 break;
 
             case "/schedule":
-                session.Messages.Add(new ChatMessage
-                {
-                    Role = "assistant",
-                    Content = $"⏱ **Automation / Schedule Registered**: Scheduled task *\"{args}\"* in session memory.",
-                    Timestamp = DateTime.Now
-                });
+                HandleScheduleCommand(session, args);
                 break;
 
             case "/grill-me":
@@ -265,6 +281,97 @@ public class GlacierAgentEngine
         }
 
         _state.NotifyStateChanged();
+    }
+
+    private void HandleScheduleCommand(StudioSession session, string rawArgs)
+    {
+        if (string.IsNullOrWhiteSpace(rawArgs))
+        {
+            session.Messages.Add(new ChatMessage
+            {
+                Role = "assistant",
+                Content = "Usage: `/schedule <delay> <command-or-prompt>` (e.g. `/schedule 30s /status` or `/schedule 5m Run build health check`).",
+                Timestamp = DateTime.Now
+            });
+            return;
+        }
+
+        var tokens = rawArgs.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 2 && TryParseDelayToken(tokens[0], out TimeSpan delay))
+        {
+            string instruction = tokens[1].Trim();
+            DateTime fireAt = DateTime.Now.Add(delay);
+            session.WorkingMemory.RecordFact($"Scheduled ({fireAt:HH:mm:ss}): {instruction}");
+            session.Messages.Add(new ChatMessage
+            {
+                Role = "assistant",
+                Content = $"⏱ **Timer Armed**: Will execute `{instruction}` in **{delay.TotalSeconds:F2}s** (at `{fireAt:HH:mm:ss}`).",
+                Timestamp = DateTime.Now
+            });
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(delay).ConfigureAwait(false);
+                    await ProcessUserMessageAsync(instruction).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _consoleService.AddLog("SCHEDULE", $"Scheduled task failed: {ex.Message}", isError: true);
+                }
+            });
+            return;
+        }
+
+        session.WorkingMemory.RecordFact($"Scheduled reminder: {rawArgs.Trim()}");
+        session.Messages.Add(new ChatMessage
+        {
+            Role = "assistant",
+            Content = $"⏱ **Reminder Recorded** in session working memory: *\"{rawArgs.Trim()}\"* (tip: prefix with a duration such as `30s` or `5m` to arm an automatic execution timer).",
+            Timestamp = DateTime.Now
+        });
+    }
+
+    private static bool TryParseDelayToken(string token, out TimeSpan delay)
+    {
+        delay = TimeSpan.Zero;
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        string trimmed = token.Trim().ToLowerInvariant();
+
+        double multiplierSeconds = 1.0;
+        string numericPart = trimmed;
+        if (trimmed.EndsWith("ms") && trimmed.Length > 2)
+        {
+            multiplierSeconds = 0.001;
+            numericPart = trimmed[..^2];
+        }
+        else if (trimmed.EndsWith("s") && trimmed.Length > 1)
+        {
+            multiplierSeconds = 1.0;
+            numericPart = trimmed[..^1];
+        }
+        else if (trimmed.EndsWith("m") && trimmed.Length > 1)
+        {
+            multiplierSeconds = 60.0;
+            numericPart = trimmed[..^1];
+        }
+        else if (trimmed.EndsWith("h") && trimmed.Length > 1)
+        {
+            multiplierSeconds = 3600.0;
+            numericPart = trimmed[..^1];
+        }
+        else
+        {
+            return false;
+        }
+
+        if (double.TryParse(numericPart, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double val) && val > 0 && val <= 86400)
+        {
+            delay = TimeSpan.FromSeconds(val * multiplierSeconds);
+            return true;
+        }
+        return false;
     }
 
     private async Task RunAgentLoopAsync(string initialPrompt, CancellationToken ct)
@@ -392,7 +499,7 @@ public class GlacierAgentEngine
                         },
                         ct);
 
-                    if (turnTier == AgentTurnTier.RemoteDeepReasoning && (targetEndpoint == _launcherService?.BeastEndpointUrl || targetEndpoint.Contains("192.168.1.108")))
+                    if (turnTier == AgentTurnTier.RemoteDeepReasoning && targetEndpoint == _launcherService?.BeastEndpointUrl)
                     {
                         _launcherService?.RecordRemoteSuccess();
                     }
@@ -766,23 +873,23 @@ public class GlacierAgentEngine
         _state.StatusText = "Agent Team Active: Spawning Host + Beast Subagents...";
         _state.NotifyStateChanged();
 
+        string hostUrl = $"http://127.0.0.1:{_launcherService?.DistributedHttpPort ?? 8080}/v1";
+        string hostModel = "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M";
+        string beastUrl = _launcherService?.BeastEndpointUrl ?? GlacierStudioState.ResolveDefaultClusterEndpointUrl();
+        string beastModel = "qwen2.5-coder-14b-instruct-q3_k_m";
+
         var teamMsg = new ChatMessage
         {
             Role = "assistant",
             Content = $"### 🚀 Heterogeneous Agent Team Initialized\n\n" +
-                      $"- 🧠 **Architect Subagent**: Host DeepSeek-R1-14B (Dual-GPU RTX 4060 + 890M :8080)\n" +
-                      $"- ⚡ **Coder Subagent**: Beast Qwen2.5-Coder-14B (RTX 3060 192.168.1.108:8080)\n" +
+                      $"- 🧠 **Architect Subagent**: Host DeepSeek-R1-14B (`{hostUrl}`)\n" +
+                      $"- ⚡ **Coder Subagent**: Cluster Qwen2.5-Coder-14B (`{beastUrl}`)\n" +
                       $"- **Objective**: *\"{objective}\"*\n\n" +
                       $"*Phase 1: Concurrently dispatching tasks to both cluster nodes in parallel...*",
             Timestamp = DateTime.Now
         };
         session.Messages.Add(teamMsg);
         _state.NotifyStateChanged();
-
-        string hostUrl = "http://127.0.0.1:8080/v1";
-        string hostModel = "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M";
-        string beastUrl = "http://192.168.1.108:8080/v1";
-        string beastModel = "qwen2.5-coder-14b-instruct-q3_k_m";
 
         _consoleService.AddLog("TEAM", $"Starting heterogeneous cluster subagents for objective: {objective}");
 

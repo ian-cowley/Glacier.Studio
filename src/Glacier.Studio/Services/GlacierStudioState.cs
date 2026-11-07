@@ -74,9 +74,9 @@ public class GlacierStudioState
 
     public event Action? OnStateChanged;
 
-    public GlacierStudioState()
+    public GlacierStudioState(string? workspaceRoot = null)
     {
-        _workspaceRoot = GlacierWorkspaceResolver.ResolveWorkspaceRoot();
+        _workspaceRoot = workspaceRoot ?? GlacierWorkspaceResolver.ResolveWorkspaceRoot();
         _sessionsDir = Path.Combine(_workspaceRoot, ".glacier", "studio", "sessions");
         _exportsDir = Path.Combine(_workspaceRoot, ".glacier", "studio", "exports");
 
@@ -394,7 +394,7 @@ public class GlacierStudioState
                 SelectedModel = "Glacier-Architect-Coder-14B-Grandmaster-Q4_K_M";
                 break;
             case ModelServerProvider.ClusterBeastCoder:
-                EndpointUrl = "http://192.168.1.108:8080/v1";
+                EndpointUrl = ResolveDefaultClusterEndpointUrl();
                 SelectedModel = "qwen2.5-coder-14b-instruct-q3_k_m";
                 break;
             case ModelServerProvider.LocalLMStudio:
@@ -432,6 +432,13 @@ public class GlacierStudioState
         ModelServerProvider.RemoteCustom => $"Cloud · {SelectedModel}",
         _ => SelectedModel
     };
+
+    public static string ResolveDefaultClusterEndpointUrl() =>
+        Environment.GetEnvironmentVariable("GLACIER_CLUSTER_URL") ?? "http://127.0.0.1:8080/v1";
+
+    public static string ResolveDefaultModelsRootDir() =>
+        Environment.GetEnvironmentVariable("GLACIER_MODELS_DIR")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".glacier", "models");
 
     public void NotifyStateChanged()
     {

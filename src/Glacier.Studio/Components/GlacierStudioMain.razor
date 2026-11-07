@@ -613,7 +613,7 @@
                             <select class="gs-select" style="flex: 1; font-size: 0.72rem;" @bind="RuntimeLauncher.SelectedGgufPath">
                                 @if (RuntimeLauncher.AvailableModels.Count == 0)
                                 {
-                                    <option value="">No .gguf models found in D:\lmstudio\models</option>
+                                    <option value="">No .gguf models found in configured model directories</option>
                                 }
                                 @foreach (var m in RuntimeLauncher.AvailableModels)
                                 {
@@ -743,7 +743,7 @@
                                         <div class="d-flex align-items-center gap-1">
                                             <button type="button" class="gs-runtime-preset-chip" @onclick='() => RuntimeLauncher.ApplyDistributedNodesPreset("local-1")' title="Single local worker on 127.0.0.1:5056">Local :5056</button>
                                             <button type="button" class="gs-runtime-preset-chip" @onclick='() => RuntimeLauncher.ApplyDistributedNodesPreset("local-2")' title="Two local workers on :5056 and :5057">2x Local</button>
-                                            <button type="button" class="gs-runtime-preset-chip" @onclick='() => RuntimeLauncher.ApplyDistributedNodesPreset("lan-3")' title="3-node LAN cluster (192.168.1.108:5055, 192.168.1.101:5056, 192.168.1.200:5057)">LAN 3-Node</button>
+                                            <button type="button" class="gs-runtime-preset-chip" @onclick='() => RuntimeLauncher.ApplyDistributedNodesPreset("lan-3")' title="3-stage cluster (:5055, :5056, :5057 or GLACIER_CLUSTER_STAGES)">3-Stage</button>
                                             <button type="button" class="gs-runtime-preset-chip" @onclick='() => RuntimeLauncher.ApplyDistributedNodesPreset("host-only")' title="Coordinator Host GPU only (no remote worker stages)">Host Only</button>
                                         </div>
                                     </div>
@@ -773,7 +773,7 @@
                                     <div class="gs-runtime-config-row">
                                         <input class="gs-input" style="width: 155px; font-size: 0.7rem; padding: 3px 7px;"
                                                @bind="RuntimeLauncher.NewNodeEndpointInput"
-                                               placeholder="Add ip:port (e.g. 192.168.1.108:5055)"
+                                               placeholder="Add host:port (e.g. 127.0.0.1:5056)"
                                                title="Enter a worker node IP:port and click + Node" />
                                         <button type="button" class="gs-runtime-btn use" style="padding: 3px 8px; font-size: 0.68rem;"
                                                 @onclick="() => RuntimeLauncher.AddDistributedNode()">
@@ -933,7 +933,7 @@
                             </div>
                             <div class="gs-runtime-desc">Dedicated remote node on Beast Desktop running Qwen2.5-Coder-14B for high-throughput coding tasks (10–14 tok/s).</div>
                             <div class="gs-runtime-actions">
-                                <span class="gs-runtime-meta">LAN: <code>http://192.168.1.108:8080/v1</code> · Model: <code>@(string.IsNullOrEmpty(RuntimeLauncher.BeastClusterActiveModel) ? "qwen2.5-coder-14b" : RuntimeLauncher.BeastClusterActiveModel)</code></span>
+                                <span class="gs-runtime-meta">Endpoint: <code>@RuntimeLauncher.BeastEndpointUrl</code> · Model: <code>@(string.IsNullOrEmpty(RuntimeLauncher.BeastClusterActiveModel) ? "qwen2.5-coder-14b" : RuntimeLauncher.BeastClusterActiveModel)</code></span>
                                 <div class="d-flex align-items-center gap-2">
                                     @if (RuntimeLauncher.BeastClusterState == RuntimeHealthState.Online)
                                     {
@@ -1092,7 +1092,7 @@
                                         <label class="gs-form-label">PROVIDER</label>
                                         <select class="gs-select" @onchange="OnProviderChanged">
                                             <option value="LocalGlacierDistributed" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierDistributed)">Glacier Host Dual-GPU (DeepSeek-R1-14B :8080)</option>
-                                            <option value="ClusterBeastCoder" selected="@(StudioState.Provider == ModelServerProvider.ClusterBeastCoder)">Glacier Beast Cluster (Qwen2.5-Coder-14B on 192.168.1.108:8080)</option>
+                                            <option value="ClusterBeastCoder" selected="@(StudioState.Provider == ModelServerProvider.ClusterBeastCoder)">Glacier Beast Cluster (Qwen2.5-Coder-14B · @RuntimeLauncher.BeastEndpointUrl)</option>
                                             <option value="LocalGlacierInference" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierInference)">Local Glacier.Inference (5055)</option>
                                             <option value="LocalOllama" selected="@(StudioState.Provider == ModelServerProvider.LocalOllama)">Local Ollama (11434)</option>
                                             <option value="LocalLMStudio" selected="@(StudioState.Provider == ModelServerProvider.LocalLMStudio)">Local LM Studio (1234)</option>

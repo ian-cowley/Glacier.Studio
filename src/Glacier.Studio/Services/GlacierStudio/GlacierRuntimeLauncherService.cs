@@ -89,7 +89,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     public string DistributedHttpHost { get; set; } = "0.0.0.0"; // --host
     public int DistributedHttpPort { get; set; } = 8080; // --http-port
     public int DistributedWorkerPort { get; set; } = 5056; // --port (worker TCP port)
-    public string DistributedCacheDir { get; set; } = @"D:\GlacierModels\cache"; // --cache
+    public string DistributedCacheDir { get; set; } = Path.Combine(GlacierStudioState.ResolveDefaultModelsRootDir(), "cache"); // --cache
     public int DistributedMaxTokens { get; set; } = -1; // --tokens (-1 = unlimited)
     public string NewNodeEndpointInput { get; set; } = "";
 
@@ -101,7 +101,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     private readonly List<ClusterStageStatusItem> _distributedClusterStages = new();
 
     // 3. Remote Beast Cluster Node (RTX 3060 12GB - Glacier-Architect-Coder-14B-Q4_K_M)
-    public string BeastEndpointUrl { get; set; } = "http://192.168.1.108:8080/v1";
+    public string BeastEndpointUrl { get; set; } = GlacierStudioState.ResolveDefaultClusterEndpointUrl();
     public string BeastDefaultModel { get; set; } = "Glacier-Architect-Coder-14B-Q4_K_M";
     public RuntimeHealthState BeastClusterState { get; private set; } = RuntimeHealthState.Offline;
     public string BeastClusterActiveModel { get; private set; } = "";
@@ -239,7 +239,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             "local-1" => "127.0.0.1:5056",
             "local-2" => "127.0.0.1:5056,127.0.0.1:5057",
-            "lan-3" => "192.168.1.108:5055,192.168.1.101:5056,192.168.1.200:5057",
+            "lan-3" => Environment.GetEnvironmentVariable("GLACIER_CLUSTER_STAGES") ?? "127.0.0.1:5055,127.0.0.1:5056,127.0.0.1:5057",
             "host-only" => "",
             _ => DistributedStages
         };
@@ -319,12 +319,12 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         _availableModels.Clear();
         var searchDirs = new List<string>
         {
-            @"D:\GlacierModels",
-            @"D:\lmstudio\models",
+            GlacierStudioState.ResolveDefaultModelsRootDir(),
+            Environment.GetEnvironmentVariable("LMSTUDIO_MODELS_DIR") ?? "",
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".lmstudio", "models"),
             Path.Combine(_workspaceRoot, "Glacier.Inference", "models"),
             Path.Combine(_workspaceRoot, "models")
-        };
+        }.Where(d => !string.IsNullOrWhiteSpace(d)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -564,9 +564,16 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public Task<bool> ProbeBeastServerAsync() => ProbeRemoteNodeAsync(CancellationToken.None);
 
+    private string GetBeastAuthorityLabel() =>
+        Uri.TryCreate(BeastEndpointUrl, UriKind.Absolute, out var uri) ? uri.Authority : BeastEndpointUrl;
+
+    private string GetBeastHostOnly() =>
+        Uri.TryCreate(BeastEndpointUrl, UriKind.Absolute, out var uri) ? uri.Host : "127.0.0.1";
+
     public async Task<bool> ProbeRemoteNodeAsync(CancellationToken ct = default)
     {
         var sw = Stopwatch.StartNew();
+        string endpointLabel = GetBeastAuthorityLabel();
         try
         {
             string probeUrl = BeastEndpointUrl.TrimEnd('/') + "/models";
@@ -578,7 +585,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 string modelId = TryParseFirstModelId(json) ?? BeastDefaultModel;
                 BeastClusterActiveModel = modelId;
                 BeastClusterLatencyMs = sw.ElapsedMilliseconds;
-                BeastClusterStatusDetail = $"Online · {BeastClusterLatencyMs} ms · 192.168.1.108:8080";
+                BeastClusterStatusDetail = $"Online · {BeastClusterLatencyMs} ms · {endpointLabel}";
                 RecordRemoteSuccess(BeastClusterLatencyMs);
                 return true;
             }
@@ -586,7 +593,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             {
                 sw.Stop();
                 RecordRemoteFailure($"HTTP {(int)resp.StatusCode}");
-                BeastClusterStatusDetail = $"HTTP {(int)resp.StatusCode} (192.168.1.108:8080)";
+                BeastClusterStatusDetail = $"HTTP {(int)resp.StatusCode} ({endpointLabel})";
                 return false;
             }
         }
@@ -594,7 +601,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             sw.Stop();
             RecordRemoteFailure(ex.Message);
-            BeastClusterStatusDetail = "Offline (192.168.1.108:8080)";
+            BeastClusterStatusDetail = $"Offline ({endpointLabel})";
             return false;
         }
     }
@@ -1126,25 +1133,38 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public async Task<bool> StartBeastRemoteServerAsync()
     {
+        string targetHost = GetBeastHostOnly();
+        string endpointLabel = GetBeastAuthorityLabel();
+        string scriptPath = Path.Combine(_workspaceRoot, "scripts", "Invoke-FleetCommand.ps1");
+        if (!File.Exists(scriptPath))
+        {
+            BeastClusterState = RuntimeHealthState.Offline;
+            BeastClusterStatusDetail = $"Fleet launcher script missing ({endpointLabel})";
+            _consoleService.AddLog("CLUSTER", $"Remote fleet launcher script not found at \"{scriptPath}\". Configure GLACIER_CLUSTER_URL or start the remote node directly.", isError: true);
+            NotifyChanged();
+            return false;
+        }
+
         BeastClusterState = RuntimeHealthState.Starting;
-        BeastClusterStatusDetail = "Starting on Beast (192.168.1.108)...";
+        BeastClusterStatusDetail = $"Starting on {targetHost}...";
         NotifyChanged();
 
         try
         {
-            _consoleService.AddLog("CLUSTER", "Launching Glacier-Architect-Coder-14B-Q4_K_M standalone server on Beast Desktop (192.168.1.108)...");
-            string scriptPath = Path.Combine(_workspaceRoot, "scripts", "Invoke-FleetCommand.ps1");
-            string remoteCmd = "Stop-Process -Name *glacier* -Force -ErrorAction SilentlyContinue; ([wmiclass]'Win32_Process').Create('cmd.exe /c cd /d D:\\GlacierPipelineCluster && start /b glacier-distributed.exe serve --model D:\\GlacierModels\\Glacier-Architect-Coder-14B-Q4_K_M.gguf --http-port 8080 --host 0.0.0.0 --cache D:\\GlacierModels\\cache > beast_serve.log 2>&1')";
+            string remoteClusterDir = Environment.GetEnvironmentVariable("GLACIER_REMOTE_CLUSTER_DIR") ?? "%USERPROFILE%\\.glacier\\cluster";
+            string remoteModelsDir = Environment.GetEnvironmentVariable("GLACIER_REMOTE_MODELS_DIR") ?? "%USERPROFILE%\\.glacier\\models";
+            _consoleService.AddLog("CLUSTER", $"Launching {BeastDefaultModel} standalone server on cluster node ({targetHost})...");
+            string remoteCmd = $"Stop-Process -Name *glacier* -Force -ErrorAction SilentlyContinue; ([wmiclass]'Win32_Process').Create('cmd.exe /c cd /d {remoteClusterDir} && start /b glacier-distributed.exe serve --model {remoteModelsDir}\\{BeastDefaultModel}.gguf --http-port 8080 --host 0.0.0.0 --cache {remoteModelsDir}\\cache > beast_serve.log 2>&1')";
 
             var psi = new ProcessStartInfo
             {
-                FileName = "powershell.exe",
-                Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\" -Target \"192.168.1.108\" -Command \"{remoteCmd}\"",
+                FileName = GlacierConsoleService.ResolveShellExecutable(),
+                Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\" -Target \"{targetHost}\" -Command \"{remoteCmd}\"",
                 WorkingDirectory = _workspaceRoot,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            var proc = Process.Start(psi);
+            using var proc = Process.Start(psi);
             if (proc != null) await proc.WaitForExitAsync();
 
             for (int i = 0; i < 20; i++)
@@ -1152,7 +1172,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 await Task.Delay(1000);
                 if (await ProbeRemoteNodeAsync())
                 {
-                    _consoleService.AddLog("CLUSTER", $"Beast Cluster Node is ONLINE at {BeastEndpointUrl}");
+                    _consoleService.AddLog("CLUSTER", $"Cluster Node is ONLINE at {BeastEndpointUrl}");
                     ActivateBeastInStudio();
                     NotifyChanged();
                     return true;
@@ -1161,40 +1181,50 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         }
         catch (Exception ex)
         {
-            _consoleService.AddLog("CLUSTER", $"Failed to launch Beast server: {ex.Message}", isError: true);
+            _consoleService.AddLog("CLUSTER", $"Failed to launch remote cluster server: {ex.Message}", isError: true);
         }
 
         BeastClusterState = RuntimeHealthState.Offline;
-        BeastClusterStatusDetail = "Startup timed out on Beast";
+        BeastClusterStatusDetail = $"Startup timed out ({endpointLabel})";
         NotifyChanged();
         return false;
     }
 
     public async Task StopBeastRemoteServerAsync()
     {
+        string targetHost = GetBeastHostOnly();
+        string endpointLabel = GetBeastAuthorityLabel();
+        string scriptPath = Path.Combine(_workspaceRoot, "scripts", "Invoke-FleetCommand.ps1");
+        if (!File.Exists(scriptPath))
+        {
+            BeastClusterState = RuntimeHealthState.Offline;
+            BeastClusterStatusDetail = $"Offline ({endpointLabel})";
+            NotifyChanged();
+            return;
+        }
+
         try
         {
-            _consoleService.AddLog("CLUSTER", "Stopping Glacier processes on Beast Desktop (192.168.1.108)...");
-            string scriptPath = Path.Combine(_workspaceRoot, "scripts", "Invoke-FleetCommand.ps1");
+            _consoleService.AddLog("CLUSTER", $"Stopping Glacier processes on cluster node ({targetHost})...");
             string remoteCmd = "Stop-Process -Name *glacier* -Force -ErrorAction SilentlyContinue";
 
             var psi = new ProcessStartInfo
             {
-                FileName = "powershell.exe",
-                Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\" -Target \"192.168.1.108\" -Command \"{remoteCmd}\"",
+                FileName = GlacierConsoleService.ResolveShellExecutable(),
+                Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\" -Target \"{targetHost}\" -Command \"{remoteCmd}\"",
                 WorkingDirectory = _workspaceRoot,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            var proc = Process.Start(psi);
+            using var proc = Process.Start(psi);
             if (proc != null) await proc.WaitForExitAsync();
             BeastClusterState = RuntimeHealthState.Offline;
-            BeastClusterStatusDetail = "Stopped (192.168.1.108:8080)";
-            _consoleService.AddLog("CLUSTER", "Beast Cluster Node stopped.");
+            BeastClusterStatusDetail = $"Stopped ({endpointLabel})";
+            _consoleService.AddLog("CLUSTER", "Cluster Node stopped.");
         }
         catch (Exception ex)
         {
-            _consoleService.AddLog("CLUSTER", $"Failed to stop Beast server: {ex.Message}", isError: true);
+            _consoleService.AddLog("CLUSTER", $"Failed to stop cluster server: {ex.Message}", isError: true);
         }
         NotifyChanged();
     }

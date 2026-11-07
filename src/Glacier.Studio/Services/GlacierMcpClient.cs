@@ -21,6 +21,9 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
     private readonly List<string> _args;
     private readonly Dictionary<string, string> _env;
     private readonly string _workingDirectory;
+    private readonly Stream? _inputStream;
+    private readonly Stream? _outputStream;
+    private StreamReader? _streamReader;
 
     private Process? _process;
     private Task? _stdoutReaderTask;
@@ -31,6 +34,7 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
     private readonly object _stderrLock = new();
 
     private long _nextRequestId = 0;
+    private bool _isStarted = false;
     private bool _isInitialized = false;
     private bool _isDisposed = false;
 
@@ -40,6 +44,7 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
         get
         {
             if (_isDisposed) return false;
+            if (_inputStream != null && _outputStream != null) return _isStarted;
             return _process != null && !_process.HasExited;
         }
     }
@@ -62,14 +67,39 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Initializes an in-memory MCP client over bidirectional streams with zero subprocess dependencies.
+    /// </summary>
+    public GlacierMcpClient(
+        string serverName,
+        Stream inputStream,
+        Stream outputStream)
+    {
+        _serverName = serverName ?? throw new ArgumentNullException(nameof(serverName));
+        _inputStream = inputStream ?? throw new ArgumentNullException(nameof(inputStream));
+        _outputStream = outputStream ?? throw new ArgumentNullException(nameof(outputStream));
+        _command = "";
+        _args = new List<string>();
+        _env = new Dictionary<string, string>();
+        _workingDirectory = "";
+    }
+
+    /// <summary>
     /// Spawns the child process and starts reading stdout/stderr streams.
     /// </summary>
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-        if (IsRunning)
+        if (IsRunning && _stdoutReaderTask != null)
         {
+            return Task.CompletedTask;
+        }
+
+        if (_inputStream != null && _outputStream != null)
+        {
+            _isStarted = true;
+            _streamReader = new StreamReader(_inputStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+            _stdoutReaderTask = Task.Run(() => ReadStdoutLoopAsync(_cts.Token));
             return Task.CompletedTask;
         }
 
@@ -137,12 +167,12 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
     /// </summary>
     private async Task ReadStdoutLoopAsync(CancellationToken ct)
     {
-        var stdout = _process?.StandardOutput;
+        var stdout = _streamReader ?? _process?.StandardOutput;
         if (stdout == null) return;
 
         try
         {
-            while (!ct.IsCancellationRequested && _process != null && !_process.HasExited)
+            while (!ct.IsCancellationRequested && IsRunning)
             {
                 string? line = await stdout.ReadLineAsync(ct).ConfigureAwait(false);
                 if (line == null) break;
@@ -228,13 +258,20 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
         await _stdinLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_process?.StandardInput == null)
+            if (_outputStream != null)
+            {
+                await _outputStream.WriteAsync(payloadBytes, 0, payloadBytes.Length, ct).ConfigureAwait(false);
+                await _outputStream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            else if (_process?.StandardInput != null)
+            {
+                await _process.StandardInput.BaseStream.WriteAsync(payloadBytes, 0, payloadBytes.Length, ct).ConfigureAwait(false);
+                await _process.StandardInput.BaseStream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            else
             {
                 throw new InvalidOperationException($"StandardInput is not available for '{_serverName}'.");
             }
-
-            await _process.StandardInput.BaseStream.WriteAsync(payloadBytes, 0, payloadBytes.Length, ct).ConfigureAwait(false);
-            await _process.StandardInput.BaseStream.FlushAsync(ct).ConfigureAwait(false);
         }
         catch
         {
@@ -319,13 +356,20 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
         await _stdinLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_process?.StandardInput == null)
+            if (_outputStream != null)
+            {
+                await _outputStream.WriteAsync(payloadBytes, 0, payloadBytes.Length, ct).ConfigureAwait(false);
+                await _outputStream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            else if (_process?.StandardInput != null)
+            {
+                await _process.StandardInput.BaseStream.WriteAsync(payloadBytes, 0, payloadBytes.Length, ct).ConfigureAwait(false);
+                await _process.StandardInput.BaseStream.FlushAsync(ct).ConfigureAwait(false);
+            }
+            else
             {
                 throw new InvalidOperationException($"StandardInput is not available for '{_serverName}'.");
             }
-
-            await _process.StandardInput.BaseStream.WriteAsync(payloadBytes, 0, payloadBytes.Length, ct).ConfigureAwait(false);
-            await _process.StandardInput.BaseStream.FlushAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -463,6 +507,7 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
     {
         if (_isDisposed) return;
         _isDisposed = true;
+        _isStarted = false;
 
         try
         {
@@ -481,6 +526,7 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
         catch { }
 
         _process?.Dispose();
+        _streamReader?.Dispose();
         _stdinLock.Dispose();
         _cts.Dispose();
     }

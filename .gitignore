@@ -10,9 +10,15 @@ bld/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+[Tt]est[Rr]esults/
 publish/
 packages/
 release-assets/
+*.nupkg
+*.snupkg
+nuget.config
+studio_unhandled.log
+studio_crash.log
 
 # Visual Studio / Rider / VS Code
 .vs/
@@ -28,11 +34,11 @@ release-assets/
 models/
 
 # Mandatory Glacier Zero Secrets Policy
-appsettings.json
-appsettings.*.json
+appsettings*.json
 !appsettings.template.json
 *.env
 *.env.*
+*.env*
 .env*
 *.pfx
 *.pem
