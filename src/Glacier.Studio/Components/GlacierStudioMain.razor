@@ -708,6 +708,27 @@
                             </div>
                         </div>
 
+                        <!-- 1b. Sleep Memory (MoE Consolidation Daemon) -->
+                        <div class="gs-runtime-card @(RuntimeLauncher.SleepEnabled ? "online" : "")">
+                            <div class="gs-runtime-card-header">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="gs-status-dot @(RuntimeLauncher.SleepEnabled ? "online" : "offline")"></span>
+                                    <div>
+                                        <div class="gs-runtime-name">Sleep Memory (MoE Consolidation)</div>
+                                        <div class="gs-runtime-sub">@RuntimeLauncher.SleepStatusDetail</div>
+                                    </div>
+                                </div>
+                                <div class="d-flex align-items-center gap-1">
+                                    <button class="gs-btn-export" @onclick="() => RuntimeLauncher.ProbeSleepStatusAsync()" style="padding: 2px 8px; font-size: 0.65rem;">Refresh</button>
+                                    <button class="gs-runtime-btn start"
+                                            disabled="@(!RuntimeLauncher.SleepEnabled || RuntimeLauncher.IsTriggeringSleep)"
+                                            @onclick="() => RuntimeLauncher.TriggerSleepConsolidationAsync()">
+                                        @(RuntimeLauncher.IsTriggeringSleep ? "Sleeping..." : "Trigger Sleep")
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- 2. Glacier.Inference.Distributed (Multi-Node Cluster Coordinator / Worker) -->
                         <div class="gs-runtime-card @(RuntimeLauncher.DistributedState == RuntimeHealthState.Online ? "online" : "")">
                             <div class="gs-runtime-card-header">

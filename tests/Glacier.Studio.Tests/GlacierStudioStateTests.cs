@@ -75,4 +75,36 @@ public class GlacierStudioStateTests
 
         Assert.Equal(2, eventFiredCount);
     }
+
+    [Fact]
+    public void RuntimeLauncher_ResolveSleepBaseUrl_StripsV1SuffixOrFallsBackToPort()
+    {
+        Assert.Equal("http://127.0.0.1:8080", GlacierRuntimeLauncherService.ResolveSleepBaseUrl("http://127.0.0.1:8080/v1/", 5055));
+        Assert.Equal("http://127.0.0.1:5055", GlacierRuntimeLauncherService.ResolveSleepBaseUrl("", 5055));
+    }
+
+    [Fact]
+    public void RuntimeLauncher_ApplySleepStatusJson_UpdatesTelemetryFields()
+    {
+        var state = CreateIsolatedState();
+        var console = new GlacierConsoleService();
+        using var launcher = new GlacierRuntimeLauncherService(
+            state,
+            console,
+            workspaceRoot: Path.GetTempPath(),
+            startBackgroundProber: false,
+            autoDiscover: false,
+            autoProbe: false);
+
+        launcher.ApplySleepStatusJson("""
+            {"enabled":true,"state":"Idle","completed_cycles":3,"total_dreams_consolidated":12,"pending_dreams":2}
+            """);
+
+        Assert.True(launcher.SleepEnabled);
+        Assert.Equal("Idle", launcher.SleepState);
+        Assert.Equal(3, launcher.SleepCompletedCycles);
+        Assert.Equal(12, launcher.SleepTotalDreamsConsolidated);
+        Assert.Equal(2, launcher.SleepPendingDreams);
+        Assert.Contains("Cycles: 3", launcher.SleepStatusDetail);
+    }
 }

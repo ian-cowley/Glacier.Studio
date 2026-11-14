@@ -81,6 +81,15 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     public long InferenceLatencyMs { get; private set; }
     public string InferenceStatusDetail { get; private set; } = "Unchecked";
 
+    // 1b. Sleep Memory (MoE Consolidation Daemon Telemetry)
+    public bool SleepEnabled { get; private set; }
+    public string SleepState { get; private set; } = "Unchecked";
+    public long SleepCompletedCycles { get; private set; }
+    public long SleepTotalDreamsConsolidated { get; private set; }
+    public int SleepPendingDreams { get; private set; }
+    public string SleepStatusDetail { get; private set; } = "Unchecked";
+    public bool IsTriggeringSleep { get; private set; }
+
     // 2. Glacier.Inference.Distributed (Multi-Node Cluster Coordinator / Worker)
     public string DistributedRole { get; set; } = "coordinator"; // "coordinator" or "worker"
     public string DistributedStages { get; set; } = ""; // Local-first dual-GPU (RTX 4060 + Radeon 890M)
@@ -473,7 +482,8 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         await Task.WhenAll(
             ProbeInferenceServerAsync(),
             ProbeDistributedServerAsync(),
-            ProbeBeastServerAsync());
+            ProbeBeastServerAsync(),
+            ProbeSleepStatusAsync());
         NotifyChanged();
     }
 
@@ -1267,6 +1277,108 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         }
         catch { }
         return null;
+    }
+
+    public static string ResolveSleepBaseUrl(string? endpointUrl, int inferencePort)
+    {
+        if (!string.IsNullOrWhiteSpace(endpointUrl))
+        {
+            string trimmed = endpointUrl.Trim().TrimEnd('/');
+            if (trimmed.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = trimmed[..^3];
+            }
+            if (!string.IsNullOrWhiteSpace(trimmed))
+            {
+                return trimmed;
+            }
+        }
+        return $"http://127.0.0.1:{inferencePort}";
+    }
+
+    public void ApplySleepStatusJson(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        SleepEnabled = root.TryGetProperty("enabled", out var pEnabled) && pEnabled.ValueKind == JsonValueKind.True;
+        SleepState = root.TryGetProperty("state", out var pState) ? pState.GetString() ?? "Unknown" : "Unknown";
+        SleepCompletedCycles = root.TryGetProperty("completed_cycles", out var pCycles) && pCycles.TryGetInt64(out long c) ? c : 0;
+        SleepTotalDreamsConsolidated = root.TryGetProperty("total_dreams_consolidated", out var pDreams) && pDreams.TryGetInt64(out long d) ? d : 0;
+        SleepPendingDreams = root.TryGetProperty("pending_dreams", out var pPending) && pPending.TryGetInt32(out int p) ? p : 0;
+
+        SleepStatusDetail = SleepEnabled
+            ? $"{SleepState} · Cycles: {SleepCompletedCycles} · Consolidated: {SleepTotalDreamsConsolidated} · Pending: {SleepPendingDreams}"
+            : $"Disabled ({SleepState})";
+    }
+
+    public async Task<bool> ProbeSleepStatusAsync(CancellationToken ct = default)
+    {
+        string baseUrl = ResolveSleepBaseUrl(_studioState.EndpointUrl, InferencePort);
+        try
+        {
+            using var resp = await _probeClient.GetAsync($"{baseUrl}/v1/sleep/status", ct);
+            if (resp.IsSuccessStatusCode)
+            {
+                string json = await resp.Content.ReadAsStringAsync(ct);
+                ApplySleepStatusJson(json);
+                NotifyChanged();
+                return true;
+            }
+        }
+        catch
+        {
+            // Sleep endpoint unavailable
+        }
+
+        SleepEnabled = false;
+        SleepState = "Unavailable";
+        SleepStatusDetail = "Sleep endpoint unavailable";
+        NotifyChanged();
+        return false;
+    }
+
+    public async Task<bool> TriggerSleepConsolidationAsync(CancellationToken ct = default)
+    {
+        if (IsTriggeringSleep) return false;
+
+        IsTriggeringSleep = true;
+        SleepStatusDetail = "Triggering sleep cycle...";
+        NotifyChanged();
+
+        string baseUrl = ResolveSleepBaseUrl(_studioState.EndpointUrl, InferencePort);
+        try
+        {
+            using var content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+            using var resp = await _probeClient.PostAsync($"{baseUrl}/v1/sleep/trigger", content, ct);
+            string json = await resp.Content.ReadAsStringAsync(ct);
+            if (resp.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                bool triggered = root.TryGetProperty("triggered", out var pTrig) && pTrig.ValueKind == JsonValueKind.True;
+                int slot = root.TryGetProperty("expert_slot_index", out var pSlot) && pSlot.TryGetInt32(out int s) ? s : -1;
+                int accepted = root.TryGetProperty("accepted_dreams", out var pAcc) && pAcc.TryGetInt32(out int a) ? a : 0;
+                int total = root.TryGetProperty("total_dreams", out var pTot) && pTot.TryGetInt32(out int t) ? t : 0;
+                _consoleService.AddLog("SLEEP", triggered
+                    ? $"Sleep cycle completed: slot #{slot}, consolidated {accepted}/{total} dream(s)."
+                    : $"Sleep trigger returned triggered=false ({json}).");
+                await ProbeSleepStatusAsync(ct);
+                return triggered;
+            }
+
+            _consoleService.AddLog("SLEEP", $"Sleep trigger failed ({(int)resp.StatusCode}): {json}", isError: true);
+        }
+        catch (Exception ex)
+        {
+            _consoleService.AddLog("SLEEP", $"Sleep trigger error: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            IsTriggeringSleep = false;
+            NotifyChanged();
+        }
+
+        return false;
     }
 
     private void NotifyChanged()
