@@ -265,7 +265,10 @@ public class GlacierAgentEngineTests
         Assert.Contains("Timer Armed", state.ActiveSession.Messages.Last().Content);
         Assert.NotEmpty(state.ActiveSession.WorkingMemory.EstablishedFacts);
 
-        await Task.Delay(250);
+        for (int i = 0; i < 60 && !state.ActiveSession.Messages.Any(m => m.Role == "assistant" && m.Content.Contains("Glacier Studio Status")); i++)
+        {
+            await Task.Delay(50);
+        }
         Assert.Contains(state.ActiveSession.Messages, m => m.Role == "assistant" && m.Content.Contains("Glacier Studio Status"));
     }
 
