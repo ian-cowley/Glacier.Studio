@@ -17,8 +17,8 @@ namespace Glacier.Showcase.Services.GlacierStudio;
 /// </summary>
 public sealed class GlacierWorkspaceGraphService
 {
-    private readonly GraphStore _graph;
-    private readonly string _workspaceRoot;
+    private GraphStore _graph;
+    private string _workspaceRoot;
     private readonly ConcurrentDictionary<string, DateTime> _indexedFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _BootstrapLock = new();
     private bool _isBootstrapped;
@@ -50,6 +50,27 @@ public sealed class GlacierWorkspaceGraphService
             : GlacierWorkspaceResolver.ResolveWorkspaceRoot();
 
         _graph = new GraphStore(initialNodeCapacity: 32_768, initialEdgeCapacity: 131_072);
+        EnsureBootstrapped();
+    }
+
+    public string WorkspaceRoot => _workspaceRoot;
+
+    public void SetWorkspaceRoot(string newWorkspaceRoot)
+    {
+        if (string.IsNullOrWhiteSpace(newWorkspaceRoot) || !Directory.Exists(newWorkspaceRoot))
+            return;
+
+        string normalized = Path.GetFullPath(newWorkspaceRoot);
+        if (string.Equals(_workspaceRoot, normalized, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        lock (_BootstrapLock)
+        {
+            _workspaceRoot = normalized;
+            _indexedFiles.Clear();
+            _graph = new GraphStore(initialNodeCapacity: 32_768, initialEdgeCapacity: 131_072);
+            _isBootstrapped = false;
+        }
         EnsureBootstrapped();
     }
 

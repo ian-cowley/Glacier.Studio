@@ -19,7 +19,7 @@
 
 <PageTitle>Glacier Agent Studio (Antigravity 2) - Pure .NET 10</PageTitle>
 
-<div class="gs-container">
+<div class="gs-container" data-ui-zoom="@StudioState.UiZoomPercent">
     <!-- 1. LEFT SIDEBAR: CONVERSATIONS & WORKSPACE -->
     <aside class="gs-sidebar">
         <div class="gs-brand">
@@ -84,13 +84,67 @@
             }
         </div>
 
+        <!-- Projects / Workspaces Section (Antigravity-style) -->
+        <div class="gs-projects-section">
+            <div class="gs-section-label">
+                <span>Projects</span>
+                <button class="gs-project-add-btn" @onclick="ToggleAddProjectInput" title="Add or switch project folder">+</button>
+            </div>
+            @if (ShowAddProjectInput)
+            {
+                <div class="gs-project-input-row">
+                    <input class="gs-project-path-input"
+                           placeholder="C:\path\to\project"
+                           @bind="NewProjectPath"
+                           @bind:event="oninput"
+                           @onkeydown="HandleNewProjectKeyDown" />
+                    <button class="gs-project-confirm-btn" @onclick="AddAndSwitchProject" title="Set project">Go</button>
+                </div>
+                @if (!string.IsNullOrEmpty(ProjectSwitchError))
+                {
+                    <div class="gs-project-error">@ProjectSwitchError</div>
+                }
+            }
+            <div class="gs-projects-list">
+                @foreach (var proj in StudioState.Projects)
+                {
+                    bool isActiveProj = string.Equals(proj, StudioState.ActiveWorkspaceRoot, StringComparison.OrdinalIgnoreCase);
+                    string projName = Path.GetFileName(proj.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    if (string.IsNullOrEmpty(projName)) projName = proj;
+                    <div class="gs-project-item @(isActiveProj ? "active" : "")"
+                         @onclick="() => SwitchWorkspaceProject(proj)"
+                         title="@proj">
+                        <span class="gs-status-dot @(isActiveProj ? "online" : "idle")"></span>
+                        <span class="gs-project-name">@projName</span>
+                        @if (StudioState.Projects.Count > 1 && !isActiveProj)
+                        {
+                            <button class="gs-session-delete"
+                                    @onclick:stopPropagation="true"
+                                    @onclick="() => RemoveWorkspaceProject(proj)"
+                                    title="Remove project">✕</button>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
         <div class="gs-sidebar-footer">
             <div class="gs-workspace-row">
                 <span class="gs-status-dot online"></span>
-                <span class="gs-workspace-pill" title="@ConsoleService.CurrentWorkingDirectory">
+                <button class="gs-workspace-pill gs-workspace-btn"
+                        @onclick="ToggleAddProjectInput"
+                        title="@ConsoleService.CurrentWorkingDirectory (click to switch project)">
                     @Path.GetFileName(ConsoleService.CurrentWorkingDirectory)
-                </span>
+                </button>
                 <span style="margin-left:auto; color:#6b7280; font-size:0.68rem;">@GraphService.NodeCount symbols</span>
+            </div>
+            <div class="gs-zoom-row" title="UI Zoom">
+                <span class="gs-zoom-label">Zoom</span>
+                <div class="gs-zoom-controls">
+                    <button class="gs-zoom-btn" @onclick="ZoomOutUi" title="Zoom Out (-10%)">-</button>
+                    <button class="gs-zoom-value" @onclick="ResetZoomUi" title="Reset Zoom (100%)">@(StudioState.UiZoomPercent)%</button>
+                    <button class="gs-zoom-btn" @onclick="ZoomInUi" title="Zoom In (+10%)">+</button>
+                </div>
             </div>
             <button class="gs-settings-trigger-btn" @onclick='() => OpenSettingsModal("models")' title="Configure Models, Endpoints, and MCP Servers">
                 <span>Settings &amp; Connections</span>
@@ -1241,6 +1295,20 @@
                                         <span class="gs-hw-engine-pill">10 steps</span>
                                     </div>
                                 </div>
+
+                                <div class="gs-setting-card" style="margin-top: 10px;">
+                                    <div class="d-flex align-items-center justify-content-between" style="gap: 12px;">
+                                        <div>
+                                            <div style="font-weight: 600; font-size: 0.84rem; color: #e5e7eb;">Appearance &amp; UI Zoom</div>
+                                            <div style="font-size: 0.75rem; color: #9ca3af;">Scale interface font and layout size (75% - 175%).</div>
+                                        </div>
+                                        <div class="gs-zoom-controls">
+                                            <button class="gs-zoom-btn" @onclick="ZoomOutUi" title="Zoom Out">-</button>
+                                            <button class="gs-zoom-value" @onclick="ResetZoomUi" title="Reset to 100%">@(StudioState.UiZoomPercent)%</button>
+                                            <button class="gs-zoom-btn" @onclick="ZoomInUi" title="Zoom In">+</button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         }
                         else if (ActiveSettingsTab == "about")
@@ -1316,6 +1384,23 @@
     private DeviceInfo? _cachedOptimalDevice;
     private double _cachedTotalRamGb;
     private System.Timers.Timer? _liveTurnTimer;
+    private bool ShowAddProjectInput { get; set; } = false;
+    private string NewProjectPath { get; set; } = "";
+    private string ProjectSwitchError { get; set; } = "";
+    private int _lastAppliedZoom = -1;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_lastAppliedZoom != StudioState.UiZoomPercent)
+        {
+            _lastAppliedZoom = StudioState.UiZoomPercent;
+            try
+            {
+                await JS.InvokeVoidAsync("eval", $"document.documentElement.style.zoom = '{StudioState.UiZoomPercent}%';");
+            }
+            catch { }
+        }
+    }
 
     protected override void OnInitialized()
     {
@@ -1416,7 +1501,67 @@
     private void SelectSession(string id)
     {
         StudioState.SwitchSession(id);
+        SyncWorkspaceServicesToActiveRoot();
     }
+
+    private void ToggleAddProjectInput()
+    {
+        ShowAddProjectInput = !ShowAddProjectInput;
+        ProjectSwitchError = "";
+        if (ShowAddProjectInput && string.IsNullOrWhiteSpace(NewProjectPath))
+        {
+            NewProjectPath = StudioState.ActiveWorkspaceRoot;
+        }
+    }
+
+    private void AddAndSwitchProject()
+    {
+        ProjectSwitchError = "";
+        if (!StudioState.SwitchProject(NewProjectPath))
+        {
+            ProjectSwitchError = "Directory not found.";
+            return;
+        }
+        SyncWorkspaceServicesToActiveRoot();
+        ShowAddProjectInput = false;
+    }
+
+    private void HandleNewProjectKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            AddAndSwitchProject();
+        }
+        else if (e.Key == "Escape")
+        {
+            ShowAddProjectInput = false;
+            ProjectSwitchError = "";
+        }
+    }
+
+    private void SwitchWorkspaceProject(string projectPath)
+    {
+        if (StudioState.SwitchProject(projectPath))
+        {
+            SyncWorkspaceServicesToActiveRoot();
+        }
+    }
+
+    private void RemoveWorkspaceProject(string projectPath)
+    {
+        StudioState.RemoveProject(projectPath);
+    }
+
+    private void SyncWorkspaceServicesToActiveRoot()
+    {
+        string root = StudioState.ActiveWorkspaceRoot;
+        ConsoleService.SetWorkingDirectory(root);
+        GraphService.SetWorkspaceRoot(root);
+    }
+
+    private void ZoomInUi() => StudioState.ZoomIn();
+    private void ZoomOutUi() => StudioState.ZoomOut();
+    private void ResetZoomUi() => StudioState.ResetZoom();
 
     private void DeleteSession(string id)
     {

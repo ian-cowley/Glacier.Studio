@@ -10,12 +10,17 @@ namespace Glacier.Showcase.Services.GlacierStudio;
 public class GlacierStudioState
 {
     private readonly List<StudioSession> _sessions = new();
+    private readonly List<string> _projects = new();
     private string _activeSessionId = "";
     private readonly string _workspaceRoot;
     private readonly string _sessionsDir;
     private readonly string _exportsDir;
+    private readonly string _prefsPath;
 
     public IReadOnlyList<StudioSession> Sessions => _sessions;
+    public IReadOnlyList<string> Projects => _projects;
+    public string ActiveWorkspaceRoot { get; private set; }
+    public int UiZoomPercent { get; private set; } = 100;
 
     public string SessionSearchQuery { get; set; } = "";
 
@@ -77,8 +82,11 @@ public class GlacierStudioState
     public GlacierStudioState(string? workspaceRoot = null)
     {
         _workspaceRoot = workspaceRoot ?? GlacierWorkspaceResolver.ResolveWorkspaceRoot();
+        ActiveWorkspaceRoot = _workspaceRoot;
+        _projects.Add(_workspaceRoot);
         _sessionsDir = Path.Combine(_workspaceRoot, ".glacier", "studio", "sessions");
         _exportsDir = Path.Combine(_workspaceRoot, ".glacier", "studio", "exports");
+        _prefsPath = Path.Combine(_workspaceRoot, ".glacier", "studio", "studio-prefs.json");
 
         // Try reading environment variable for Gemini or OpenAI if available
         var geminiEnv = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
@@ -91,7 +99,8 @@ public class GlacierStudioState
         var defaultSession = new StudioSession
         {
             Title = "Workspace Session",
-            ModelSnapshot = GetModelDisplayName()
+            ModelSnapshot = GetModelDisplayName(),
+            WorkspaceRoot = ActiveWorkspaceRoot
         };
 
         defaultSession.Messages.Add(new ChatMessage
@@ -103,8 +112,124 @@ public class GlacierStudioState
         _sessions.Add(defaultSession);
         _activeSessionId = defaultSession.Id;
 
-        // Load existing persisted sessions from disk
+        // Load existing persisted sessions & studio preferences from disk
         LoadSessionsFromDisk();
+        LoadPreferencesFromDisk();
+    }
+
+    public bool SwitchProject(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(path.Trim().Trim('"', '\''));
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (!Directory.Exists(normalized)) return false;
+
+        if (!_projects.Any(p => string.Equals(p, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            _projects.Insert(0, normalized);
+        }
+
+        ActiveWorkspaceRoot = normalized;
+        SavePreferencesToDisk();
+        NotifyStateChanged();
+        return true;
+    }
+
+    public bool AddProject(string path) => SwitchProject(path);
+
+    public bool RemoveProject(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        int idx = _projects.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0 || _projects.Count <= 1) return false;
+
+        string removed = _projects[idx];
+        _projects.RemoveAt(idx);
+        if (string.Equals(ActiveWorkspaceRoot, removed, StringComparison.OrdinalIgnoreCase))
+        {
+            ActiveWorkspaceRoot = _projects[0];
+        }
+        SavePreferencesToDisk();
+        NotifyStateChanged();
+        return true;
+    }
+
+    public void SetUiZoomPercent(int percent)
+    {
+        int clamped = Math.Clamp(percent, 75, 175);
+        if (UiZoomPercent == clamped) return;
+        UiZoomPercent = clamped;
+        SavePreferencesToDisk();
+        NotifyStateChanged();
+    }
+
+    public void ZoomIn() => SetUiZoomPercent(UiZoomPercent + 10);
+    public void ZoomOut() => SetUiZoomPercent(UiZoomPercent - 10);
+    public void ResetZoom() => SetUiZoomPercent(100);
+
+    private sealed class StudioPreferencesPayload
+    {
+        public int UiZoomPercent { get; set; } = 100;
+        public string? ActiveWorkspaceRoot { get; set; }
+        public List<string>? Projects { get; set; }
+    }
+
+    private void LoadPreferencesFromDisk()
+    {
+        try
+        {
+            if (!File.Exists(_prefsPath)) return;
+            string json = File.ReadAllText(_prefsPath, Encoding.UTF8);
+            var payload = JsonSerializer.Deserialize<StudioPreferencesPayload>(json);
+            if (payload == null) return;
+
+            UiZoomPercent = Math.Clamp(payload.UiZoomPercent == 0 ? 100 : payload.UiZoomPercent, 75, 175);
+            if (payload.Projects != null)
+            {
+                foreach (string p in payload.Projects)
+                {
+                    if (!string.IsNullOrWhiteSpace(p) && Directory.Exists(p) &&
+                        !_projects.Any(existing => string.Equals(existing, p, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _projects.Add(p);
+                    }
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(payload.ActiveWorkspaceRoot) && Directory.Exists(payload.ActiveWorkspaceRoot))
+            {
+                ActiveWorkspaceRoot = payload.ActiveWorkspaceRoot;
+                if (!_projects.Any(existing => string.Equals(existing, ActiveWorkspaceRoot, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _projects.Insert(0, ActiveWorkspaceRoot);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private void SavePreferencesToDisk()
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(_prefsPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            var payload = new StudioPreferencesPayload
+            {
+                UiZoomPercent = UiZoomPercent,
+                ActiveWorkspaceRoot = ActiveWorkspaceRoot,
+                Projects = _projects.ToList()
+            };
+            File.WriteAllText(_prefsPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+        }
+        catch { }
     }
 
     public void LoadSessionsFromDisk()
@@ -179,7 +304,8 @@ public class GlacierStudioState
         var session = new StudioSession
         {
             Title = title,
-            ModelSnapshot = GetModelDisplayName()
+            ModelSnapshot = GetModelDisplayName(),
+            WorkspaceRoot = ActiveWorkspaceRoot
         };
 
         _sessions.Insert(0, session);
@@ -195,6 +321,15 @@ public class GlacierStudioState
         if (target != null)
         {
             _activeSessionId = target.Id;
+            if (!string.IsNullOrWhiteSpace(target.WorkspaceRoot) && Directory.Exists(target.WorkspaceRoot))
+            {
+                ActiveWorkspaceRoot = target.WorkspaceRoot;
+                if (!_projects.Any(p => string.Equals(p, target.WorkspaceRoot, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _projects.Insert(0, target.WorkspaceRoot);
+                }
+                SavePreferencesToDisk();
+            }
             NotifyStateChanged();
         }
     }

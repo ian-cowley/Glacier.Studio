@@ -41,6 +41,7 @@ public class StudioSession
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public string ModelSnapshot { get; set; } = "Glacier: Grandmaster-14B";
+    public string WorkspaceRoot { get; set; } = "";
     public List<ChatMessage> Messages { get; set; } = new();
     public int TotalTokensUsed { get; set; }
     public StudioWorkingMemory WorkingMemory { get; set; } = new();

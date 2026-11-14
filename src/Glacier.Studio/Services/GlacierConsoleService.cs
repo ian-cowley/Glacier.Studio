@@ -44,6 +44,25 @@ public class GlacierConsoleService
         AddLog("SYSTEM", $"Active Shell: {_shellExecutable} (CWD: {CurrentWorkingDirectory})");
     }
 
+    public bool SetWorkingDirectory(string targetDir)
+    {
+        if (string.IsNullOrWhiteSpace(targetDir)) return false;
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(targetDir.Trim().Trim('"', '\''));
+        }
+        catch
+        {
+            return false;
+        }
+        if (!Directory.Exists(normalized)) return false;
+
+        CurrentWorkingDirectory = normalized;
+        AddLog("SYSTEM", $"Directory changed to: {CurrentWorkingDirectory}");
+        return true;
+    }
+
     public static string ResolveShellExecutable()
     {
         try
@@ -133,10 +152,8 @@ public class GlacierConsoleService
 
             if (Directory.Exists(targetDir))
             {
-                CurrentWorkingDirectory = targetDir;
-                string msg = $"Directory changed to: {CurrentWorkingDirectory}";
-                AddLog("SYSTEM", msg);
-                return (0, msg + Environment.NewLine);
+                SetWorkingDirectory(targetDir);
+                return (0, $"Directory changed to: {CurrentWorkingDirectory}" + Environment.NewLine);
             }
             else
             {
