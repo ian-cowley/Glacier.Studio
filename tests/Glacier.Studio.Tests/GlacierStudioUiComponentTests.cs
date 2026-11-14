@@ -66,7 +66,8 @@ public class GlacierStudioUiComponentTests : IDisposable
                         "application/json")
                 };
             }
-            if (path.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))
+            if (path.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith("/api/tags", StringComparison.OrdinalIgnoreCase))
             {
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -82,9 +83,9 @@ public class GlacierStudioUiComponentTests : IDisposable
 
     private sealed class StubHttpClientFactory : IHttpClientFactory
     {
-        private readonly HttpClient _client;
-        public StubHttpClientFactory(HttpClient client) => _client = client;
-        public HttpClient CreateClient(string name) => _client;
+        private readonly HttpMessageHandler _handler;
+        public StubHttpClientFactory(HttpMessageHandler handler) => _handler = handler;
+        public HttpClient CreateClient(string name) => new HttpClient(_handler, disposeHandler: false);
     }
 
     private (TestContext Ctx, GlacierStudioState State, GlacierRuntimeLauncherService Launcher) CreateStudioTestContext(
@@ -93,7 +94,8 @@ public class GlacierStudioUiComponentTests : IDisposable
         var ctx = new TestContext();
         ctx.JSInterop.Mode = JSRuntimeMode.Loose;
 
-        var httpClient = new HttpClient(new StubHttpMessageHandler(httpHandler));
+        var handler = new StubHttpMessageHandler(httpHandler);
+        var httpClient = new HttpClient(handler, disposeHandler: false);
         var console = new GlacierConsoleService(_tempDir);
         var mcp = new GlacierMcpManager();
         var state = new GlacierStudioState(_tempDir);
@@ -109,7 +111,7 @@ public class GlacierStudioUiComponentTests : IDisposable
             autoProbe: false);
         var engine = new GlacierAgentEngine(httpClient, state, console, docPreview, mcp, graph, launcher);
 
-        ctx.Services.AddSingleton<IHttpClientFactory>(new StubHttpClientFactory(httpClient));
+        ctx.Services.AddSingleton<IHttpClientFactory>(new StubHttpClientFactory(handler));
         ctx.Services.AddSingleton(console);
         ctx.Services.AddSingleton(mcp);
         ctx.Services.AddSingleton(state);
@@ -352,6 +354,280 @@ public class GlacierStudioUiComponentTests : IDisposable
 
         // Close modal
         cut.Find("button.gs-modal-close-btn").Click();
+        Assert.Empty(cut.FindAll("div.gs-modal-card"));
+    }
+
+    [Fact]
+    public void Sidebar_SwitchSession_SearchFiltersDom_And_DeleteLastSessionKeepsOneActive()
+    {
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        state.Sessions[0].Title = "Alpha Unique Thread";
+        state.Sessions[0].Messages.Add(new ChatMessage { Role = "user", Content = "Alpha prompt" });
+        cut.Find("button.gs-new-chat-btn").Click();
+        state.Sessions.First(s => s.Title != "Alpha Unique Thread").Title = "Zebra Unique Thread";
+        cut.Find("input.gs-session-search-input").Input("Unique");
+
+        Assert.Contains("Alpha Unique Thread", cut.Markup);
+        Assert.Contains("Zebra Unique Thread", cut.Markup);
+
+        // Search hides non-matching session
+        cut.Find("input.gs-session-search-input").Input("Zebra");
+        Assert.DoesNotContain("Alpha Unique Thread", cut.Markup);
+        Assert.Contains("Zebra Unique Thread", cut.Markup);
+
+        // Clear restores both
+        cut.Find("button.gs-search-clear-btn").Click();
+        Assert.Contains("Alpha Unique Thread", cut.Markup);
+
+        // Clicking first session switches active session
+        cut.FindAll("div.gs-session-item")[0].Click();
+        Assert.Equal(state.Sessions[0].Id, state.ActiveSession.Id);
+
+        // Deleting down to last session hides delete button & keeps 1 valid active session
+        cut.FindAll("button.gs-session-delete")[0].Click();
+        Assert.Single(state.Sessions);
+        Assert.Empty(cut.FindAll("button.gs-session-delete"));
+        Assert.NotNull(state.ActiveSession);
+    }
+
+    [Theory]
+    [InlineData(ModelServerProvider.LocalGlacierDistributed)]
+    [InlineData(ModelServerProvider.ClusterBeastCoder)]
+    [InlineData(ModelServerProvider.LocalGlacierInference)]
+    [InlineData(ModelServerProvider.LocalOllama)]
+    [InlineData(ModelServerProvider.LocalLMStudio)]
+    [InlineData(ModelServerProvider.RemoteGemini)]
+    [InlineData(ModelServerProvider.RemoteOpenAI)]
+    [InlineData(ModelServerProvider.LocalCustom)]
+    public void Header_And_Settings_ProviderSelect_SupportsAllProviders(ModelServerProvider provider)
+    {
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        cut.Find("select.gs-header-model-select").Change(provider.ToString());
+        Assert.Equal(provider, state.Provider);
+    }
+
+    [Fact]
+    public void Header_JsonExport_InspectorToggle_ComposerUtils_And_MessageTurnControls_Work()
+    {
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+
+        // Seed a full turn with plan, thinking, and tool call
+        state.ActiveSession.Messages.Add(new ChatMessage { Role = "user", Content = "Inspect repo" });
+        state.ActiveSession.Messages.Add(new ChatMessage
+        {
+            Role = "assistant",
+            Content = "Done inspecting.",
+            ExecutionPlan = "1. Read files",
+            ThinkingContent = "Checking symbols...",
+            ToolCalls = new()
+            {
+                new AgentToolCallRecord { ToolName = "read_file", ArgumentsJson = "{}", ResultOutput = "ok" }
+            }
+        });
+
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        // Export JSON + close banner
+        var jsonBtn = cut.FindAll("button.gs-btn-export").First(b => b.TextContent.Contains("JSON", StringComparison.OrdinalIgnoreCase));
+        jsonBtn.Click();
+        Assert.Contains(".json", cut.Markup, StringComparison.OrdinalIgnoreCase);
+        cut.Find("button.gs-banner-close").Click();
+
+        // Toggle inspector panel off and back on
+        var toggleInspectorBtn = cut.FindAll("button.gs-btn-export").First(b =>
+            b.GetAttribute("title")?.Contains("Inspector Panel", StringComparison.OrdinalIgnoreCase) == true);
+        toggleInspectorBtn.Click();
+        Assert.Empty(cut.FindAll("button.gs-aux-tab"));
+        toggleInspectorBtn.Click();
+        Assert.Equal(4, cut.FindAll("button.gs-aux-tab").Count);
+
+        // Expand/collapse plan, thinking, and tool call headers
+        cut.Find("div.gs-plan-header").Click();
+        cut.Find("div.gs-thinking-header").Click();
+        cut.Find("div.gs-tool-call-header").Click();
+
+        // Message copy & reuse buttons (re-query after each click)
+        Assert.True(cut.FindAll("button.gs-msg-footer-copy-btn").Count >= 2);
+        cut.FindAll("button.gs-msg-footer-copy-btn")[0].Click();
+        cut.FindAll("button.gs-msg-footer-copy-btn")[1].Click();
+
+        // Slash command select closes popup
+        cut.Find("textarea.gs-textarea").Input("/");
+        var slashItems = cut.FindAll("div.gs-slash-item");
+        Assert.NotEmpty(slashItems);
+        slashItems[0].Click();
+        Assert.Empty(cut.FindAll("#slashMenuPopup"));
+
+        // Composer Team and Clear thread buttons
+        cut.FindAll("button.gs-composer-util-btn").First(b => b.TextContent.Contains("Team", StringComparison.OrdinalIgnoreCase)).Click();
+        Assert.Contains("/team", cut.Find("textarea.gs-textarea").GetAttribute("value") ?? cut.Markup);
+
+        cut.FindAll("button.gs-composer-util-btn").First(b => b.TextContent.Contains("Clear thread", StringComparison.OrdinalIgnoreCase)).Click();
+        Assert.Single(state.ActiveSession.Messages);
+        Assert.Contains("cleared", state.ActiveSession.Messages[0].Content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DocTab_Outline_FormattedRawToggle_And_FilePicker_Work()
+    {
+        var mdPath = Path.Combine(_tempDir, "README.md");
+        File.WriteAllText(mdPath, "# Glacier Studio\n\n## Architecture\nDetails here.\n");
+
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+        state.ActiveRightTab = "doc";
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        cut.FindAll("button.gs-toggle-btn").First(b => b.TextContent.Contains("Outline", StringComparison.OrdinalIgnoreCase)).Click();
+        cut.FindAll("button.gs-toggle-btn").First(b => b.TextContent.Contains("Outline", StringComparison.OrdinalIgnoreCase)).Click();
+
+        cut.FindAll("button.gs-toggle-btn").First(b => b.TextContent.Trim() == "Raw").Click();
+        cut.FindAll("button.gs-toggle-btn").First(b => b.TextContent.Trim() == "Preview").Click();
+
+        var fileSelect = cut.FindAll("select.gs-select").First(s => s.InnerHtml.Contains("Open file..."));
+        if (fileSelect.InnerHtml.Contains("README.md"))
+        {
+            fileSelect.Change(mdPath);
+        }
+    }
+
+    [Fact]
+    public void ConsoleTab_InputValidation_Run_And_Clear_Work()
+    {
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+        var console = bunit.Services.GetRequiredService<GlacierConsoleService>();
+        console.AddLog("SYSTEM", "Seeded log line");
+        state.ActiveRightTab = "console";
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        Assert.Contains("Seeded log line", cut.Markup);
+
+        // Empty command validation does not throw
+        cut.Find("button.gs-console-btn").Click();
+
+        // Clear chip clears previous logs
+        cut.FindAll("span.gs-quick-cmd").First(s => s.TextContent.Trim() == "clear").Click();
+        Assert.DoesNotContain("Seeded log line", cut.Markup);
+    }
+
+    [Fact]
+    public void GraphTab_SearchInput_And_AllQuickFilterChips_Work()
+    {
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+        state.ActiveRightTab = "graph";
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        cut.Find("input[placeholder*='Filter project or symbol']").Input("Glacier.Tune");
+
+        int chipCount = cut.FindAll("span.gs-quick-cmd").Count;
+        Assert.Equal(5, chipCount);
+        for (int i = 0; i < chipCount; i++)
+        {
+            cut.FindAll("span.gs-quick-cmd")[i].Click();
+        }
+    }
+
+    [Theory]
+    [InlineData("2048")]
+    [InlineData("4096")]
+    [InlineData("8192")]
+    [InlineData("16384")]
+    [InlineData("32768")]
+    public void TelemetryTab_InferenceParameters_BindAllContextSizes_Port_Device_And_Engine(string ctxSize)
+    {
+        var (ctx, state, launcher) = CreateStudioTestContext();
+        using var bunit = ctx;
+        state.ActiveRightTab = "telemetry";
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        cut.FindAll("div.gs-runtime-param-grid select.gs-select")[0].Change("cpu");
+        Assert.Equal("cpu", launcher.InferenceDevice);
+
+        cut.FindAll("div.gs-runtime-param-grid select.gs-select")[1].Change("vulkan");
+        Assert.Equal("vulkan", launcher.InferenceEngine);
+
+        cut.FindAll("div.gs-runtime-param-grid select.gs-select")[2].Change(ctxSize);
+        Assert.Equal(int.Parse(ctxSize), launcher.InferenceContextSize);
+
+        cut.Find("div.gs-runtime-param-grid input[type='number']").Change("5060");
+        Assert.Equal(5060, launcher.InferencePort);
+    }
+
+    [Fact]
+    public void TelemetryTab_DistributedPresets_Fields_CheckStatus_And_HardwareRefresh_Work()
+    {
+        var (ctx, state, launcher) = CreateStudioTestContext();
+        using var bunit = ctx;
+        state.ActiveRightTab = "telemetry";
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        // Check Status & Hardware Refresh buttons
+        cut.FindAll("button.gs-btn-export").First(b => b.TextContent.Contains("Check Status")).Click();
+        cut.FindAll("button.gs-btn-export").First(b => b.TextContent.Trim() == "Refresh").Click();
+
+        // Preset chips: Local :5056, 2x Local, 3-Stage, Host Only, auto
+        int chipCount = cut.FindAll("button.gs-runtime-preset-chip").Count;
+        Assert.True(chipCount >= 5);
+        for (int i = 0; i < chipCount; i++)
+        {
+            cut.FindAll("button.gs-runtime-preset-chip")[i].Click();
+        }
+        Assert.Equal("auto", launcher.DistributedLayers);
+
+        // Coordinator inputs
+        cut.Find("input[placeholder*='Comma-separated']").Change("127.0.0.1:5056,127.0.0.1:5057");
+        Assert.Equal("127.0.0.1:5056,127.0.0.1:5057", launcher.DistributedStages);
+
+        cut.Find("input[placeholder*='auto or e.g.']").Change("12,16");
+        Assert.Equal("12,16", launcher.DistributedLayers);
+    }
+
+    [Fact]
+    public void SettingsModal_RemoteApiKeyVisibility_ModelPreset_TestConnection200_BackdropAndStopPropagation_Work()
+    {
+        var (ctx, state, _) = CreateStudioTestContext();
+        using var bunit = ctx;
+        var cut = bunit.RenderComponent<GlacierStudioMain>();
+
+        cut.Find("button.gs-settings-trigger-btn").Click();
+
+        // API Key password input appears for RemoteGemini
+        var providerSelect = cut.FindAll("div.gs-modal-form-grid select.gs-select")[0];
+        providerSelect.Change(ModelServerProvider.RemoteGemini.ToString());
+        var apiKeyInput = cut.Find("input[type='password']");
+        apiKeyInput.Change("test-session-value");
+        Assert.Equal("test-session-value", state.ApiKey);
+
+        // Switching back to LocalOllama hides API Key input
+        providerSelect = cut.FindAll("div.gs-modal-form-grid select.gs-select")[0];
+        providerSelect.Change(ModelServerProvider.LocalOllama.ToString());
+        Assert.Empty(cut.FindAll("input[type='password']"));
+
+        // Model preset selection updates SelectedModel
+        var presetSelect = cut.FindAll("div.gs-modal-form-grid select.gs-select")[1];
+        var presets = state.GetModelPresetsForProvider(ModelServerProvider.LocalOllama);
+        if (presets.Count > 0)
+        {
+            presetSelect.Change(presets[0]);
+            Assert.Equal(presets[0], state.SelectedModel);
+        }
+
+        // Valid Test Connection -> 200 OK -> success span
+        cut.Find("input[placeholder='http://127.0.0.1:5055/v1']").Change("http://127.0.0.1:5055/v1");
+        cut.Find("button.gs-btn-test-conn").Click();
+        cut.WaitForAssertion(() => Assert.Contains("✓", cut.Markup));
+
+        // Backdrop click closes modal
+        cut.Find("div.gs-modal-backdrop").Click();
         Assert.Empty(cut.FindAll("div.gs-modal-card"));
     }
 }
