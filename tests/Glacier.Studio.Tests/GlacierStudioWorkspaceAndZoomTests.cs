@@ -53,7 +53,7 @@ public sealed class GlacierStudioWorkspaceAndZoomTests : IDisposable
         public HttpClient CreateClient(string name) => new(new NoOpHttpHandler());
     }
 
-    private TestContext CreateTestContext(GlacierStudioState state)
+    private TestContext CreateTestContext(GlacierStudioState state, IGlacierFolderPicker? folderPicker = null)
     {
         var ctx = new TestContext();
         ctx.JSInterop.Mode = JSRuntimeMode.Loose;
@@ -72,6 +72,7 @@ public sealed class GlacierStudioWorkspaceAndZoomTests : IDisposable
         ctx.Services.AddSingleton(mcpMgr);
         ctx.Services.AddSingleton(launcher);
         ctx.Services.AddSingleton(agent);
+        ctx.Services.AddSingleton<IGlacierFolderPicker>(folderPicker ?? new GlacierFolderPickerService());
         ctx.Services.AddSingleton<IHttpClientFactory>(factory);
         return ctx;
     }
@@ -163,5 +164,22 @@ public sealed class GlacierStudioWorkspaceAndZoomTests : IDisposable
 
         cut.Find("button[title='Zoom Out (-10%)']").Click();
         Assert.Equal("100", cut.Find(".gs-container").GetAttribute("data-ui-zoom"));
+    }
+
+    [Fact]
+    public void Ui_NativeFolderPicker_SwitchesProjectDirectlyOnClick()
+    {
+        var state = new GlacierStudioState(_projectA);
+        var picker = new GlacierFolderPickerService();
+        picker.SetNativePicker(_ => _projectB);
+
+        using var ctx = CreateTestContext(state, picker);
+        var cut = ctx.RenderComponent<GlacierStudioMain>();
+
+        cut.Find(".gs-project-add-btn").Click();
+
+        Assert.Equal(_projectB, state.ActiveWorkspaceRoot);
+        Assert.Contains("ProjectBeta", cut.Find(".gs-workspace-pill").TextContent);
+        Assert.Empty(cut.FindAll(".gs-project-path-input"));
     }
 }

@@ -64,6 +64,8 @@ public class Program
         });
 
         // Glacier Studio Production Services
+        appBuilder.Services.AddSingleton<GlacierFolderPickerService>();
+        appBuilder.Services.AddSingleton<IGlacierFolderPicker>(sp => sp.GetRequiredService<GlacierFolderPickerService>());
         appBuilder.Services.AddSingleton<GlacierConsoleService>();
         appBuilder.Services.AddSingleton<GlacierMcpManager>();
         appBuilder.Services.AddSingleton<GlacierStudioState>();
@@ -84,6 +86,15 @@ public class Program
         appBuilder.RootComponents.Add<App>("#app");
 
         var app = appBuilder.Build();
+
+        app.Services.GetRequiredService<GlacierFolderPickerService>()
+            .SetNativePicker(initial =>
+                app.MainWindow.ShowOpenFolder(
+                    title: "Select Project Folder",
+                    defaultPath: !string.IsNullOrWhiteSpace(initial) && Directory.Exists(initial) ? initial : null,
+                    multiSelect: false) is { Length: > 0 } folders
+                    ? folders[0]
+                    : null);
 
         // Native OS Desktop Window Configuration (Antigravity 2 Style)
         app.MainWindow

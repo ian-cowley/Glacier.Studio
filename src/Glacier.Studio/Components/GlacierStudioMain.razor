@@ -13,6 +13,7 @@
 @inject GlacierMcpManager McpManager
 @inject GlacierWorkspaceGraphService GraphService
 @inject GlacierRuntimeLauncherService RuntimeLauncher
+@inject IGlacierFolderPicker FolderPicker
 @inject IHttpClientFactory HttpClientFactory
 @inject IJSRuntime JS
 @implements IDisposable
@@ -88,7 +89,7 @@
         <div class="gs-projects-section">
             <div class="gs-section-label">
                 <span>Projects</span>
-                <button class="gs-project-add-btn" @onclick="ToggleAddProjectInput" title="Add or switch project folder">+</button>
+                <button class="gs-project-add-btn" @onclick="BrowseOrToggleProjectInputAsync" title="Select project folder">+</button>
             </div>
             @if (ShowAddProjectInput)
             {
@@ -132,8 +133,8 @@
             <div class="gs-workspace-row">
                 <span class="gs-status-dot online"></span>
                 <button class="gs-workspace-pill gs-workspace-btn"
-                        @onclick="ToggleAddProjectInput"
-                        title="@ConsoleService.CurrentWorkingDirectory (click to switch project)">
+                        @onclick="BrowseOrToggleProjectInputAsync"
+                        title="@ConsoleService.CurrentWorkingDirectory (click to select project folder)">
                     @Path.GetFileName(ConsoleService.CurrentWorkingDirectory)
                 </button>
                 <span style="margin-left:auto; color:#6b7280; font-size:0.68rem;">@GraphService.NodeCount symbols</span>
@@ -1502,6 +1503,23 @@
     {
         StudioState.SwitchSession(id);
         SyncWorkspaceServicesToActiveRoot();
+    }
+
+    private async Task BrowseOrToggleProjectInputAsync()
+    {
+        if (FolderPicker.HasNativePicker)
+        {
+            string? selected = await FolderPicker.PickFolderAsync(StudioState.ActiveWorkspaceRoot);
+            if (!string.IsNullOrWhiteSpace(selected) && StudioState.SwitchProject(selected))
+            {
+                SyncWorkspaceServicesToActiveRoot();
+                ShowAddProjectInput = false;
+                ProjectSwitchError = "";
+            }
+            return;
+        }
+
+        ToggleAddProjectInput();
     }
 
     private void ToggleAddProjectInput()

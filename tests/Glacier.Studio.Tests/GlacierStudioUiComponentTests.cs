@@ -112,6 +112,7 @@ public class GlacierStudioUiComponentTests : IDisposable
         var engine = new GlacierAgentEngine(httpClient, state, console, docPreview, mcp, graph, launcher);
 
         ctx.Services.AddSingleton<IHttpClientFactory>(new StubHttpClientFactory(handler));
+        ctx.Services.AddSingleton<IGlacierFolderPicker>(new GlacierFolderPickerService());
         ctx.Services.AddSingleton(console);
         ctx.Services.AddSingleton(mcp);
         ctx.Services.AddSingleton(state);

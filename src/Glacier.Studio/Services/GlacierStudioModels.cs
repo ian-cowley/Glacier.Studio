@@ -9,6 +9,24 @@ using Glacier.DocTree.Core;
 
 namespace Glacier.Showcase.Services.GlacierStudio;
 
+public interface IGlacierFolderPicker
+{
+    bool HasNativePicker { get; }
+    Task<string?> PickFolderAsync(string? initialDirectory = null);
+}
+
+public sealed class GlacierFolderPickerService : IGlacierFolderPicker
+{
+    private Func<string?, string?>? _nativePicker;
+
+    public bool HasNativePicker => _nativePicker != null;
+
+    public void SetNativePicker(Func<string?, string?> picker) => _nativePicker = picker;
+
+    public Task<string?> PickFolderAsync(string? initialDirectory = null)
+        => Task.FromResult(_nativePicker?.Invoke(initialDirectory));
+}
+
 public enum ModelServerProvider
 {
     LocalOllama,
