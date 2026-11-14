@@ -589,6 +589,47 @@ public class GlacierStudioUiComponentTests : IDisposable
 
         cut.Find("input[placeholder*='auto or e.g.']").Change("12,16");
         Assert.Equal("12,16", launcher.DistributedLayers);
+
+        // Coordinator Host GPU, HTTP Bind, HTTP Port, Slice Cache, Max Tokens
+        var hostBindSelect = cut.FindAll("select.gs-select").First(s => s.InnerHtml.Contains("127.0.0.1 (Localhost only)"));
+        hostBindSelect.Change("127.0.0.1");
+        Assert.Equal("127.0.0.1", launcher.DistributedHttpHost);
+
+        var httpPortInput = cut.FindAll("div.gs-runtime-param-field")
+            .First(f => f.TextContent.Contains("--http-port"))
+            .QuerySelector("input[type='number']")!;
+        httpPortInput.Change("8099");
+        Assert.Equal(8099, launcher.DistributedHttpPort);
+
+        var cacheInput = cut.FindAll("div.gs-runtime-param-field")
+            .First(f => f.TextContent.Contains("--cache"))
+            .QuerySelector("input")!;
+        cacheInput.Change(@"C:\cache\dist");
+        Assert.Equal(@"C:\cache\dist", launcher.DistributedCacheDir);
+
+        var maxTokensInput = cut.FindAll("div.gs-runtime-param-field")
+            .First(f => f.TextContent.Contains("--tokens"))
+            .QuerySelector("input[type='number']")!;
+        maxTokensInput.Change("4096");
+        Assert.Equal(4096, launcher.DistributedMaxTokens);
+
+        // Worker role inputs (--port & --cache)
+        var roleSelect = cut.FindAll("select.gs-select").First(s => s.InnerHtml.Contains("Coordinator (--role coordinator"));
+        roleSelect.Change("worker");
+        Assert.Equal("worker", launcher.DistributedRole);
+
+        var workerPortInput = cut.FindAll("div.gs-runtime-param-field")
+            .First(f => f.TextContent.Contains("Worker TCP Port"))
+            .QuerySelector("input[type='number']")!;
+        workerPortInput.Change("5099");
+        Assert.Equal(5099, launcher.DistributedWorkerPort);
+
+        var workerCacheInput = cut.FindAll("div.gs-runtime-param-field")
+            .First(f => f.TextContent.Contains("Slice Cache"))
+            .QuerySelector("input")!;
+        workerCacheInput.Change(@"C:\cache\worker");
+        Assert.Equal(@"C:\cache\worker", launcher.DistributedCacheDir);
+        Assert.Contains("--port 5099", launcher.BuildDistributedCliArgs());
     }
 
     [Fact]
