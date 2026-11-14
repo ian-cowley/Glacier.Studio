@@ -2374,7 +2374,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
 
                     sbSystem.AppendLine();
                     sbSystem.AppendLine("## HOW TO CALL A TOOL:");
-                    sbSystem.AppendLine("When you need to run a tool, output ONLY a tool call block:");
+                    sbSystem.AppendLine("Invoke the registered tool functions directly via the API tool_calls interface. Only if native tool_calls are unavailable, output:");
                     sbSystem.AppendLine("<tool_call>");
                     sbSystem.AppendLine("{\"name\": \"<tool_name>\", \"arguments\": {\"<arg_name>\": \"<value>\"}}");
                     sbSystem.AppendLine("</tool_call>");
@@ -2590,12 +2590,12 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
 
         string working = content;
 
-        // 1. Match <tool_call>...</tool_call> blocks
+        // 1. Match <tool_call>...</tool_call> blocks (JSON or Qwen3.5/3.6 <function=name><parameter=k>v</parameter></function>)
         var xmlMatches = Regex.Matches(working, @"<tool_call>\s*(.*?)\s*</tool_call>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
         foreach (Match match in xmlMatches)
         {
             string raw = match.Groups[1].Value.Trim();
-            var tc = TryParseToolCallJson(raw);
+            var tc = TryParseToolCallJson(raw) ?? TryParseQwenXmlFunctionCall(raw);
             if (tc != null)
             {
                 toolCalls.Add(tc);
@@ -2734,6 +2734,31 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
         {
             return null;
         }
+    }
+
+    private static ToolCallItem? TryParseQwenXmlFunctionCall(string raw)
+    {
+        var fnMatch = Regex.Match(raw, @"<function=([a-zA-Z0-9_\-\.]+)>\s*(.*?)\s*</function>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        if (!fnMatch.Success) return null;
+
+        string toolName = fnMatch.Groups[1].Value.Trim();
+        string body = fnMatch.Groups[2].Value;
+        var argsObj = new JsonObject();
+
+        var paramMatches = Regex.Matches(body, @"<parameter=([a-zA-Z0-9_\-\.]+)>\s*(.*?)\s*</parameter>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        foreach (Match pm in paramMatches)
+        {
+            string key = pm.Groups[1].Value.Trim();
+            string val = pm.Groups[2].Value.Trim();
+            argsObj[key] = val;
+        }
+
+        return new ToolCallItem
+        {
+            Id = $"call_{Guid.NewGuid():N}"[..12],
+            Name = toolName,
+            Arguments = argsObj.ToJsonString()
+        };
     }
 
     private static string NormalizeArgumentsJson(string toolName, string rawArgs)
