@@ -679,6 +679,22 @@
                                 </div>
                             </div>
 
+                            <div class="gs-runtime-config-row" style="gap: 8px; flex-wrap: wrap;">
+                                <label class="d-flex align-items-center gap-1" style="font-size: 0.7rem; cursor: pointer;">
+                                    <input type="checkbox" @bind="RuntimeLauncher.InferenceEnableSleepMemory" />
+                                    <span>Sleep Memory (<code>--sleep-memory</code>)</span>
+                                </label>
+                                @if (RuntimeLauncher.InferenceEnableSleepMemory)
+                                {
+                                    <input type="text"
+                                           class="gs-input"
+                                           style="flex: 1; min-width: 160px; font-size: 0.7rem; padding: 3px 6px;"
+                                           @bind="RuntimeLauncher.InferenceSleepCheckpointPath"
+                                           placeholder="Optional --sleep-checkpoint (.gmoe)"
+                                           title="Checkpoint path passed as --sleep-checkpoint" />
+                                }
+                            </div>
+
                             <div class="gs-runtime-actions">
                                 <span class="gs-runtime-meta">
                                     Device: <code>@RuntimeLauncher.InferenceDevice</code> · Engine: <code>@RuntimeLauncher.InferenceEngine</code> · Ctx: <code>@RuntimeLauncher.InferenceContextSize</code>

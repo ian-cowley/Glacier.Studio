@@ -73,6 +73,9 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     public string InferenceDevice { get; set; } = "nvidia-rtx-4060";
     public string InferenceEngine { get; set; } = "baremetal";
     public int InferenceContextSize { get; set; } = 8192;
+    public bool InferenceEnableSleepMemory { get; set; }
+    public string InferenceSleepCheckpointPath { get; set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".glacier", "sleep.gmoe");
     public string SelectedGgufPath { get; set; } = "";
     public string SelectedLocalGgufPath { get; set; } = "";
     public string SelectedClusterGgufPath { get; set; } = "";
@@ -891,7 +894,15 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             }
             catch { }
 
-            string args = $"serve \"{SelectedGgufPath}\" --port {InferencePort} --device {InferenceDevice} --engine {InferenceEngine} --ctx {InferenceContextSize}{splitArg}";
+            string args = BuildInferenceServeArguments(
+                SelectedGgufPath,
+                InferencePort,
+                InferenceDevice,
+                InferenceEngine,
+                InferenceContextSize,
+                splitArg,
+                InferenceEnableSleepMemory,
+                InferenceSleepCheckpointPath);
             _consoleService.AddLog("SYSTEM", $"Starting Glacier.Inference: glacier.exe {args}");
 
             var psi = new ProcessStartInfo
@@ -1277,6 +1288,28 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         }
         catch { }
         return null;
+    }
+
+    public static string BuildInferenceServeArguments(
+        string ggufPath,
+        int port,
+        string device,
+        string engine,
+        int contextSize,
+        string splitArg = "",
+        bool enableSleepMemory = false,
+        string? sleepCheckpointPath = null)
+    {
+        string args = $"serve \"{ggufPath}\" --port {port} --device {device} --engine {engine} --ctx {contextSize}{splitArg}";
+        if (enableSleepMemory)
+        {
+            args += " --sleep-memory";
+            if (!string.IsNullOrWhiteSpace(sleepCheckpointPath))
+            {
+                args += $" --sleep-checkpoint \"{sleepCheckpointPath.Trim()}\"";
+            }
+        }
+        return args;
     }
 
     public static string ResolveSleepBaseUrl(string? endpointUrl, int inferencePort)

@@ -107,4 +107,19 @@ public class GlacierStudioStateTests
         Assert.Equal(2, launcher.SleepPendingDreams);
         Assert.Contains("Cycles: 3", launcher.SleepStatusDetail);
     }
+
+    [Fact]
+    public void RuntimeLauncher_BuildInferenceServeArguments_AppendsSleepFlagsWhenEnabled()
+    {
+        string baseArgs = GlacierRuntimeLauncherService.BuildInferenceServeArguments(
+            "model.gguf", 5055, "auto", "baremetal", 8192);
+        Assert.DoesNotContain("--sleep-memory", baseArgs);
+
+        string sleepArgs = GlacierRuntimeLauncherService.BuildInferenceServeArguments(
+            "model.gguf", 5055, "auto", "baremetal", 8192,
+            splitArg: " --split auto",
+            enableSleepMemory: true,
+            sleepCheckpointPath: @"C:\models\sleep.gmoe");
+        Assert.Contains("--split auto --sleep-memory --sleep-checkpoint \"C:\\models\\sleep.gmoe\"", sleepArgs);
+    }
 }
