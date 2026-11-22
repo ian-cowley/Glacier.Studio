@@ -402,6 +402,7 @@ public class GlacierAgentEngine
         int turnToolCallsExecuted = 0;
         bool isLocalModel = _state.Provider is ModelServerProvider.LocalGlacierInference
             or ModelServerProvider.LocalGlacierDistributed
+            or ModelServerProvider.LocalNpuSidecar
             or ModelServerProvider.LocalOllama
             or ModelServerProvider.LocalLMStudio;
 
@@ -436,11 +437,26 @@ public class GlacierAgentEngine
                 string targetModel;
                 AgentTurnTier turnTier = AgentTurnTier.LocalFastTool;
 
-                if (_state.Provider is ModelServerProvider.LocalGlacierDistributed or ModelServerProvider.ClusterBeastCoder)
+                if (_state.Provider == ModelServerProvider.LocalNpuSidecar)
                 {
-                    turnTier = (currentTurn == 1 || isSynthesisTurn)
-                        ? AgentTurnTier.RemoteDeepReasoning
-                        : AgentTurnTier.LocalFastTool;
+                    turnTier = AgentTurnTier.LocalFastTool;
+                    if (_launcherService != null &&
+                        _launcherService.TryGetOnlineNpuConfig(out string npuEndpoint, out string npuModel))
+                    {
+                        targetEndpoint = npuEndpoint;
+                        targetModel = !string.IsNullOrWhiteSpace(npuModel)
+                            ? npuModel
+                            : _state.SelectedModel;
+                    }
+                    else
+                    {
+                        targetEndpoint = GlacierRuntimeLauncherService.NormalizeOpenAiV1Endpoint(_state.EndpointUrl);
+                        targetModel = _state.SelectedModel;
+                    }
+                }
+                else if (_state.Provider is ModelServerProvider.LocalGlacierDistributed or ModelServerProvider.ClusterBeastCoder)
+                {
+                    turnTier = GlacierIntentRouter.ResolveTurnTier(_state.Provider, analyzedIntent, currentTurn, isSynthesisTurn);
 
                     targetEndpoint = _launcherService != null
                         ? _launcherService.ResolveEndpointForTurn(turnTier)
@@ -449,6 +465,22 @@ public class GlacierAgentEngine
                     targetModel = _launcherService != null
                         ? _launcherService.ResolveModelForTurn(turnTier)
                         : _state.SelectedModel;
+                }
+                else if (_state.Provider == ModelServerProvider.LocalGlacierInference &&
+                         _launcherService is { AllowNpuOffloadOnBusyGpu: true })
+                {
+                    turnTier = GlacierIntentRouter.ResolveTurnTier(_state.Provider, analyzedIntent, currentTurn, isSynthesisTurn);
+                    if (turnTier == AgentTurnTier.LocalFastTool && _launcherService.ShouldUseNpuForLocalFastTool())
+                    {
+                        targetEndpoint = _launcherService.ResolveEndpointForTurn(turnTier);
+                        targetModel = _launcherService.ResolveModelForTurn(turnTier);
+                        _consoleService.AddLog("NPU", $"[NPU OFFLOAD]: Routing LocalFastTool turn {currentTurn} to NPU sidecar ({targetEndpoint}, {targetModel}).");
+                    }
+                    else
+                    {
+                        targetEndpoint = _state.EndpointUrl;
+                        targetModel = _state.SelectedModel;
+                    }
                 }
                 else
                 {
@@ -474,7 +506,7 @@ public class GlacierAgentEngine
                 LlmStreamResult? streamResult = null;
                 try
                 {
-                    streamResult = await StreamModelEndpointCoreAsync(
+                    streamResult = await StreamWithGpuBusyTrackingAsync(
                         targetEndpoint,
                         targetModel,
                         _state.ApiKey,
@@ -525,7 +557,7 @@ public class GlacierAgentEngine
 
                     try
                     {
-                        streamResult = await StreamModelEndpointCoreAsync(
+                        streamResult = await StreamWithGpuBusyTrackingAsync(
                             fallbackEndpoint,
                             fallbackModel,
                             _state.ApiKey,
@@ -1064,14 +1096,50 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
     {
         try
         {
-            return await StreamModelEndpointCoreAsync(
+            return await StreamWithGpuBusyTrackingAsync(
                 nodeUrl, nodeModel, null, messages, new JsonArray(), null, null, ct);
         }
         catch (Exception ex)
         {
             _consoleService.AddLog("TEAM", $"Node '{nodeName}' ({nodeUrl}) error: {ex.Message}. Falling back to default studio endpoint ({fallbackUrl}).", isError: true);
-            return await StreamModelEndpointCoreAsync(
+            return await StreamWithGpuBusyTrackingAsync(
                 fallbackUrl, fallbackModel, _state.ApiKey, messages, new JsonArray(), null, null, ct);
+        }
+    }
+
+    private async Task<LlmStreamResult> StreamWithGpuBusyTrackingAsync(
+        string endpointUrl,
+        string modelName,
+        string? apiKey,
+        List<JsonObject> messages,
+        JsonArray tools,
+        Action<string>? onContentDelta,
+        Action<string>? onReasoningDelta,
+        CancellationToken ct)
+    {
+        bool targetsLocalGpu = _launcherService != null && _launcherService.IsLocalGpuEndpoint(endpointUrl);
+        if (targetsLocalGpu)
+        {
+            _launcherService!.BeginLocalGpuTurn();
+        }
+        try
+        {
+            return await StreamModelEndpointCoreAsync(
+                endpointUrl,
+                modelName,
+                apiKey,
+                messages,
+                tools,
+                onContentDelta,
+                onReasoningDelta,
+                ct);
+        }
+        finally
+        {
+            if (targetsLocalGpu)
+            {
+                _launcherService!.EndLocalGpuTurn();
+            }
         }
     }
 
@@ -1382,6 +1450,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
 
                     // Stage 4: Ingest AST symbols into Knowledge Graph & Session Working Memory
                     var discoveredSymbols = _graphService.IngestFileContent(fullPath, content);
+                    await _graphService.IngestFileContentAsync(fullPath, content, ct);
                     string relReadPath = _graphService.NormalizeRelativePath(fullPath);
                     memory.RecordFileInspection(relReadPath, content.Length, discoveredSymbols);
 
@@ -1428,6 +1497,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
 
                     // Stage 4: Update Knowledge Graph & Working Memory with modified file
                     var writtenSymbols = _graphService.IngestFileContent(fullWPath, wContent);
+                    await _graphService.IngestFileContentAsync(fullWPath, wContent, ct);
                     string relWritePath = _graphService.NormalizeRelativePath(fullWPath);
                     memory.RecordFileInspection(relWritePath, wContent.Length, writtenSymbols);
                     memory.RecordFact($"Wrote {wContent.Length} chars to '{relWritePath}'");
@@ -1526,7 +1596,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
                         searchQuery = srProp.GetString() ?? "";
 
                     string? scopePath = root.TryGetProperty("scope", out var scProp) ? scProp.GetString() : null;
-                    string searchOutput = _graphService.SearchWorkspace(searchQuery, scopePath);
+                    string searchOutput = await _graphService.SearchWorkspaceAsync(searchQuery, scopePath, cancellationToken: ct);
                     memory.AddTrace($"Searched workspace for '{searchQuery}'");
                     return (true, searchOutput);
 
@@ -1540,7 +1610,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
                         kgEntity = kgrProp.GetString() ?? "";
 
                     if (string.IsNullOrWhiteSpace(kgEntity)) kgEntity = "Workspace";
-                    string kgResult = _graphService.QueryNeighborhoodSummary(kgEntity, maxEdges: 30);
+                    string kgResult = await _graphService.QueryNeighborhoodSummaryAsync(kgEntity, maxEdges: 30, cancellationToken: ct);
                     memory.AddTrace($"Queried Knowledge Graph for '{kgEntity}'");
                     return (true, kgResult);
 
@@ -1838,8 +1908,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
         Action<string>? onReasoningDelta,
         CancellationToken ct)
     {
-        string endpoint = (endpointUrl ?? _state.EndpointUrl).TrimEnd('/');
-        string url = endpoint.EndsWith("/chat/completions") ? endpoint : $"{endpoint}/chat/completions";
+        string url = NormalizeChatCompletionsUrl(endpointUrl ?? _state.EndpointUrl);
 
         var payload = new JsonObject
         {
@@ -1921,14 +1990,18 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
             using (doc)
             {
                 var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
 
                 if (root.TryGetProperty("usage", out var usageElem) && usageElem.ValueKind == JsonValueKind.Object)
                 {
-                    if (usageElem.TryGetProperty("completion_tokens", out var ctProp) && ctProp.TryGetInt32(out int ctVal))
+                    if (usageElem.TryGetProperty("completion_tokens", out var ctProp) && ctProp.ValueKind == JsonValueKind.Number && ctProp.TryGetInt32(out int ctVal))
                         completionTokens = ctVal;
-                    if (usageElem.TryGetProperty("prompt_tokens", out var ptProp) && ptProp.TryGetInt32(out int ptVal))
+                    if (usageElem.TryGetProperty("prompt_tokens", out var ptProp) && ptProp.ValueKind == JsonValueKind.Number && ptProp.TryGetInt32(out int ptVal))
                         promptTokens = ptVal;
-                    if (usageElem.TryGetProperty("total_tokens", out var ttProp) && ttProp.TryGetInt32(out int ttVal))
+                    if (usageElem.TryGetProperty("total_tokens", out var ttProp) && ttProp.ValueKind == JsonValueKind.Number && ttProp.TryGetInt32(out int ttVal))
                         totalTokens = ttVal;
                 }
 
@@ -1938,7 +2011,8 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
                 }
 
                 var firstChoice = choices[0];
-                if (!firstChoice.TryGetProperty("delta", out var delta) || delta.ValueKind != JsonValueKind.Object)
+                if (firstChoice.ValueKind != JsonValueKind.Object ||
+                    !firstChoice.TryGetProperty("delta", out var delta) || delta.ValueKind != JsonValueKind.Object)
                 {
                     continue;
                 }
@@ -1978,7 +2052,8 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
                 {
                     foreach (var tc in toolCalls.EnumerateArray())
                     {
-                        int index = tc.TryGetProperty("index", out var idxProp) && idxProp.TryGetInt32(out int idx) ? idx : 0;
+                        if (tc.ValueKind != JsonValueKind.Object) continue;
+                        int index = tc.TryGetProperty("index", out var idxProp) && idxProp.ValueKind == JsonValueKind.Number && idxProp.TryGetInt32(out int idx) ? idx : 0;
                         if (!toolAccumulators.TryGetValue(index, out var acc))
                         {
                             acc = new StreamingToolCallAccumulator { Index = index };
@@ -2142,72 +2217,98 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
         Action<string>? onReasoningDelta)
     {
         var result = new LlmStreamResult();
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        if (string.IsNullOrWhiteSpace(json))
+            return result;
 
-        if (root.TryGetProperty("usage", out var usageElem) && usageElem.ValueKind == JsonValueKind.Object)
+        JsonDocument doc;
+        try
         {
-            if (usageElem.TryGetProperty("completion_tokens", out var ctProp))
-                result.CompletionTokens = ctProp.GetInt32();
-            if (usageElem.TryGetProperty("prompt_tokens", out var ptProp))
-                result.PromptTokens = ptProp.GetInt32();
-            if (usageElem.TryGetProperty("total_tokens", out var ttProp))
-                result.TotalTokens = ttProp.GetInt32();
+            doc = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return result;
         }
 
-        if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+        using (doc)
         {
-            var firstChoice = choices[0];
-            if (firstChoice.TryGetProperty("message", out var msg))
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
             {
-                if (msg.TryGetProperty("reasoning_content", out var rProp) && rProp.ValueKind == JsonValueKind.String)
-                {
-                    result.Reasoning = rProp.GetString() ?? "";
-                    if (!string.IsNullOrEmpty(result.Reasoning))
-                    {
-                        onReasoningDelta?.Invoke(result.Reasoning);
-                    }
-                }
+                return result;
+            }
 
-                if (msg.TryGetProperty("content", out var contentProp) && contentProp.ValueKind == JsonValueKind.String)
-                {
-                    string raw = contentProp.GetString() ?? "";
-                    
-                    int thinkStart = raw.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
-                    int thinkEnd = raw.IndexOf("</think>", StringComparison.OrdinalIgnoreCase);
-                    if (thinkStart >= 0 && thinkEnd > thinkStart)
-                    {
-                        string thinkPart = raw.Substring(thinkStart + 7, thinkEnd - (thinkStart + 7)).Trim();
-                        result.Reasoning = (result.Reasoning + "\n" + thinkPart).Trim();
-                        raw = (raw[..thinkStart] + raw[(thinkEnd + 8)..]).Trim();
-                        onReasoningDelta?.Invoke(thinkPart);
-                    }
+            if (root.TryGetProperty("usage", out var usageElem) && usageElem.ValueKind == JsonValueKind.Object)
+            {
+                if (usageElem.TryGetProperty("completion_tokens", out var ctProp) && ctProp.ValueKind == JsonValueKind.Number && ctProp.TryGetInt32(out int ctVal))
+                    result.CompletionTokens = ctVal;
+                if (usageElem.TryGetProperty("prompt_tokens", out var ptProp) && ptProp.ValueKind == JsonValueKind.Number && ptProp.TryGetInt32(out int ptVal))
+                    result.PromptTokens = ptVal;
+                if (usageElem.TryGetProperty("total_tokens", out var ttProp) && ttProp.ValueKind == JsonValueKind.Number && ttProp.TryGetInt32(out int ttVal))
+                    result.TotalTokens = ttVal;
+            }
 
-                    result.Content = raw;
-                    if (!string.IsNullOrEmpty(raw))
-                    {
-                        onContentDelta?.Invoke(raw);
-                    }
-                }
-
-                if (msg.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("choices", out var choices) &&
+                choices.ValueKind == JsonValueKind.Array &&
+                choices.GetArrayLength() > 0)
+            {
+                var firstChoice = choices[0];
+                if (firstChoice.ValueKind == JsonValueKind.Object &&
+                    firstChoice.TryGetProperty("message", out var msg) &&
+                    msg.ValueKind == JsonValueKind.Object)
                 {
-                    foreach (var tc in toolCalls.EnumerateArray())
+                    if (msg.TryGetProperty("reasoning_content", out var rProp) && rProp.ValueKind == JsonValueKind.String)
                     {
-                        string id = tc.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? "" : $"call_{Guid.NewGuid():N}"[..12];
-                        if (tc.TryGetProperty("function", out var fn))
+                        result.Reasoning = rProp.GetString() ?? "";
+                        if (!string.IsNullOrEmpty(result.Reasoning))
                         {
-                            string fnName = fn.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                            string fnArgs = fn.TryGetProperty("arguments", out var a) ? a.GetString() ?? "{}" : "{}";
+                            onReasoningDelta?.Invoke(result.Reasoning);
+                        }
+                    }
 
-                            if (!string.IsNullOrEmpty(fnName))
+                    if (msg.TryGetProperty("content", out var contentProp) && contentProp.ValueKind == JsonValueKind.String)
+                    {
+                        string raw = contentProp.GetString() ?? "";
+
+                        int thinkStart = raw.IndexOf("<think>", StringComparison.OrdinalIgnoreCase);
+                        int thinkEnd = raw.IndexOf("</think>", StringComparison.OrdinalIgnoreCase);
+                        if (thinkStart >= 0 && thinkEnd > thinkStart)
+                        {
+                            string thinkPart = raw.Substring(thinkStart + 7, thinkEnd - (thinkStart + 7)).Trim();
+                            result.Reasoning = (result.Reasoning + "\n" + thinkPart).Trim();
+                            raw = (raw[..thinkStart] + raw[(thinkEnd + 8)..]).Trim();
+                            onReasoningDelta?.Invoke(thinkPart);
+                        }
+
+                        result.Content = raw;
+                        if (!string.IsNullOrEmpty(raw))
+                        {
+                            onContentDelta?.Invoke(raw);
+                        }
+                    }
+
+                    if (msg.TryGetProperty("tool_calls", out var toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var tc in toolCalls.EnumerateArray())
+                        {
+                            if (tc.ValueKind != JsonValueKind.Object) continue;
+                            string id = tc.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String
+                                ? idProp.GetString() ?? ""
+                                : $"call_{Guid.NewGuid():N}"[..12];
+                            if (tc.TryGetProperty("function", out var fn) && fn.ValueKind == JsonValueKind.Object)
                             {
-                                result.ToolCalls.Add(new ToolCallItem
+                                string fnName = fn.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "";
+                                string fnArgs = fn.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.String ? a.GetString() ?? "{}" : "{}";
+
+                                if (!string.IsNullOrEmpty(fnName))
                                 {
-                                    Id = id,
-                                    Name = fnName,
-                                    Arguments = fnArgs
-                                });
+                                    result.ToolCalls.Add(new ToolCallItem
+                                    {
+                                        Id = id,
+                                        Name = fnName,
+                                        Arguments = fnArgs
+                                    });
+                                }
                             }
                         }
                     }
@@ -2240,6 +2341,7 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
 
         bool isLocalModel = _state.Provider is ModelServerProvider.LocalGlacierInference
             or ModelServerProvider.LocalGlacierDistributed
+            or ModelServerProvider.LocalNpuSidecar
             or ModelServerProvider.LocalOllama
             or ModelServerProvider.LocalLMStudio;
 
@@ -3055,5 +3157,30 @@ $@"## 🚀 Heterogeneous Agent Team Synthesis
         }
 
         return tools;
+    }
+
+    internal static string NormalizeChatCompletionsUrl(string? rawEndpoint)
+    {
+        string raw = (rawEndpoint ?? "").Trim();
+        if (string.IsNullOrEmpty(raw))
+        {
+            return "/v1/chat/completions";
+        }
+
+        int suffixIdx = raw.IndexOfAny(['?', '#']);
+        string pathPart = (suffixIdx >= 0 ? raw[..suffixIdx] : raw).TrimEnd('/');
+        string suffix = suffixIdx >= 0 ? raw[suffixIdx..] : string.Empty;
+
+        if (pathPart.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{pathPart}{suffix}";
+        }
+
+        if (pathPart.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{pathPart}/chat/completions{suffix}";
+        }
+
+        return $"{pathPart}/v1/chat/completions{suffix}";
     }
 }

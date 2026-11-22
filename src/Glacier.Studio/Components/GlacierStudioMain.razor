@@ -171,6 +171,7 @@
                         </optgroup>
                         <optgroup label="Local Engines">
                             <option value="LocalGlacierInference">💻 Glacier.Inference (:5055)</option>
+                            <option value="LocalNpuSidecar">🧠 NPU Sidecar (FLM / Lemonade)</option>
                             <option value="LocalOllama">🦙 Ollama (:11434)</option>
                             <option value="LocalLMStudio">🧪 LM Studio (:1234)</option>
                         </optgroup>
@@ -409,6 +410,7 @@
                                     </optgroup>
                                     <optgroup label="Local Engines">
                                         <option value="LocalGlacierInference">💻 Glacier.Inference (:5055)</option>
+                                        <option value="LocalNpuSidecar">🧠 NPU Sidecar (FLM / Lemonade)</option>
                                         <option value="LocalOllama">🦙 Ollama (:11434)</option>
                                         <option value="LocalLMStudio">🧪 LM Studio (:1234)</option>
                                     </optgroup>
@@ -630,7 +632,7 @@
                             <div style="font-size: 0.82rem; font-weight: 600; color: #e5e7eb;">
                                 Workspace Knowledge Graph
                             </div>
-                            <span class="gs-outline-badge">@GraphService.NodeCount nodes · @GraphService.EdgeCount edges</span>
+                            <span class="gs-outline-badge">@GraphService.NodeCount nodes · @GraphService.EdgeCount edges · @GraphService.SemanticChunkCount chunks · @GraphService.EmbeddingModeLabel</span>
                         </div>
 
                         <div class="gs-console-cmd-row" style="margin-bottom: 8px;">
@@ -698,7 +700,7 @@
                                     <select class="gs-select" style="font-size: 0.7rem; padding: 3px 6px;" @bind="RuntimeLauncher.InferenceDevice">
                                         <option value="nvidia-rtx-4060">nvidia-rtx-4060</option>
                                         <option value="auto">auto (Fastest GPU)</option>
-                                        @foreach (var d in _cachedDevices)
+                                        @foreach (var d in _cachedDevices.Where(d => !d.IsNpu))
                                         {
                                             @if (!string.Equals(d.Id, "nvidia-rtx-4060", StringComparison.OrdinalIgnoreCase))
                                             {
@@ -1013,7 +1015,74 @@
                             </div>
                         </div>
 
-                        <!-- Card 3: Beast Desktop Cluster Node (RTX 3060 12GB - Qwen2.5-Coder-14B) -->
+                        <!-- Card 3: Local NPU Sidecar (AMD XDNA 2 / FastFlowLM / Lemonade) -->
+                        <div class="gs-runtime-card @(RuntimeLauncher.NpuSidecarState == RuntimeHealthState.Online ? "online" : "")">
+                            <div class="gs-runtime-card-header">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="gs-status-dot @GetHealthDotClass(RuntimeLauncher.NpuSidecarState)"></span>
+                                    <div>
+                                        <div class="gs-runtime-name">NPU Sidecar (FastFlowLM / Lemonade)</div>
+                                        <div class="gs-runtime-sub">
+                                            @(RuntimeLauncher.IsNpuHardwarePresent
+                                                ? $"{RuntimeLauncher.NpuDeviceId} · {RuntimeLauncher.NpuSidecarSharedCapGb:F1} GB NPU Cap"
+                                                : $"No NPU HW · {RuntimeLauncher.NpuSidecarSharedCapGb:F1} GB Default Cap")
+                                            @if (!string.IsNullOrEmpty(RuntimeLauncher.NpuSidecarEndpointUrl))
+                                            {
+                                                <span> · @RuntimeLauncher.NpuSidecarEndpointUrl</span>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                                <span class="gs-runtime-status-pill @GetHealthDotClass(RuntimeLauncher.NpuSidecarState)">
+                                    @RuntimeLauncher.NpuSidecarStatusDetail
+                                </span>
+                            </div>
+
+                            <div class="gs-runtime-config-row" style="gap: 8px; flex-wrap: wrap;">
+                                <label class="d-flex align-items-center gap-1" style="font-size: 0.7rem; cursor: pointer;">
+                                    <input type="checkbox" @bind="RuntimeLauncher.AllowNpuOffloadOnBusyGpu" />
+                                    <span>Offload LocalFastTool turns to NPU when GPU is busy/offline</span>
+                                </label>
+                                <input type="text"
+                                       class="gs-input"
+                                       style="flex: 1; min-width: 170px; font-size: 0.7rem; padding: 3px 6px;"
+                                       @bind="RuntimeLauncher.NpuSidecarCustomEndpointUrl"
+                                       placeholder="Optional NPU URL (e.g. http://127.0.0.1:52625)"
+                                       title="Optional explicit NPU sidecar endpoint override" />
+                            </div>
+
+                            @if (RuntimeLauncher.NpuSidecarModels.Count > 0)
+                            {
+                                <div class="gs-runtime-node-pills">
+                                    @foreach (var npuModel in RuntimeLauncher.NpuSidecarModels)
+                                    {
+                                        <span class="gs-runtime-node-pill">@npuModel</span>
+                                    }
+                                </div>
+                            }
+
+                            <div class="gs-runtime-actions">
+                                <span class="gs-runtime-meta">
+                                    Runtime: <code>@RuntimeLauncher.NpuSidecarRuntimeName</code> · Active: <code>@(string.IsNullOrEmpty(RuntimeLauncher.NpuSidecarActiveModel) ? "none" : RuntimeLauncher.NpuSidecarActiveModel)</code> · Latency: <code>@RuntimeLauncher.NpuSidecarLatencyMs ms</code>
+                                </span>
+                                <div class="d-flex align-items-center gap-2">
+                                    <button class="gs-btn-export" @onclick="() => RuntimeLauncher.ProbeNpuSidecarAsync()" style="padding: 3px 9px; font-size: 0.68rem;">Probe NPU</button>
+                                    @if (RuntimeLauncher.NpuSidecarState == RuntimeHealthState.Online)
+                                    {
+                                        @if (StudioState.Provider != ModelServerProvider.LocalNpuSidecar)
+                                        {
+                                            <button class="gs-runtime-btn use" @onclick="() => RuntimeLauncher.ActivateNpuSidecarInStudio()">Use Active</button>
+                                        }
+                                        else
+                                        {
+                                            <span class="gs-runtime-active-tag">Active</span>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Card 4: Beast Desktop Cluster Node (RTX 3060 12GB - Qwen2.5-Coder-14B) -->
                         <div class="gs-runtime-card">
                             <div class="gs-runtime-header">
                                 <div class="d-flex align-items-center gap-2">
@@ -1093,6 +1162,10 @@
                                     {
                                         <span class="gs-hw-optimal-badge">Primary</span>
                                     }
+                                    else if (dev.IsNpu)
+                                    {
+                                        <span class="gs-hw-optimal-badge">NPU</span>
+                                    }
                                 </div>
 
                                 <div class="gs-hw-metrics">
@@ -1101,7 +1174,7 @@
                                         <span class="gs-hw-metric-val">@dev.DedicatedVramGb.ToString("F2") GB</span>
                                     </div>
                                     <div class="gs-hw-metric">
-                                        <span class="gs-hw-metric-label">Shared Memory</span>
+                                        <span class="gs-hw-metric-label">@(dev.IsNpu ? "NPU Cap (50% RAM)" : "Shared Memory")</span>
                                         <span class="gs-hw-metric-val">@dev.SharedVramGb.ToString("F2") GB</span>
                                     </div>
                                     <div class="gs-hw-metric">
@@ -1186,6 +1259,7 @@
                                             <option value="LocalGlacierDistributed" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierDistributed)">Glacier Host Dual-GPU (DeepSeek-R1-14B :8080)</option>
                                             <option value="ClusterBeastCoder" selected="@(StudioState.Provider == ModelServerProvider.ClusterBeastCoder)">Glacier Beast Cluster (Qwen2.5-Coder-14B · @RuntimeLauncher.BeastEndpointUrl)</option>
                                             <option value="LocalGlacierInference" selected="@(StudioState.Provider == ModelServerProvider.LocalGlacierInference)">Local Glacier.Inference (5055)</option>
+                                            <option value="LocalNpuSidecar" selected="@(StudioState.Provider == ModelServerProvider.LocalNpuSidecar)">Local NPU Sidecar (FastFlowLM / Lemonade)</option>
                                             <option value="LocalOllama" selected="@(StudioState.Provider == ModelServerProvider.LocalOllama)">Local Ollama (11434)</option>
                                             <option value="LocalLMStudio" selected="@(StudioState.Provider == ModelServerProvider.LocalLMStudio)">Local LM Studio (1234)</option>
                                             <option value="RemoteGemini" selected="@(StudioState.Provider == ModelServerProvider.RemoteGemini)">Cloud Gemini (Google AI)</option>
@@ -1424,6 +1498,7 @@
 
         RefreshHardwareTelemetry();
         _ = RuntimeLauncher.ProbeAllRuntimesAsync();
+        _ = GraphService.InitializeEmbeddingsAsync();
     }
 
     private string GetActiveTurnElapsedText()
@@ -1457,6 +1532,10 @@
         if (StudioState.Provider == ModelServerProvider.ClusterBeastCoder)
         {
             return GetHealthDotClass(RuntimeLauncher.BeastClusterState);
+        }
+        if (StudioState.Provider == ModelServerProvider.LocalNpuSidecar)
+        {
+            return GetHealthDotClass(RuntimeLauncher.NpuSidecarState);
         }
         return "online";
     }
@@ -1575,6 +1654,7 @@
         string root = StudioState.ActiveWorkspaceRoot;
         ConsoleService.SetWorkingDirectory(root);
         GraphService.SetWorkspaceRoot(root);
+        _ = GraphService.IndexWorkspaceSemanticAsync();
     }
 
     private void ZoomInUi() => StudioState.ZoomIn();

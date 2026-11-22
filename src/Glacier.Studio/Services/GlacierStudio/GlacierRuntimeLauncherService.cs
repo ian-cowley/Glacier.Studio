@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Glacier.Inference.Hardware;
 
 namespace Glacier.Showcase.Services.GlacierStudio;
 
@@ -79,10 +80,26 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     public string SelectedGgufPath { get; set; } = "";
     public string SelectedLocalGgufPath { get; set; } = "";
     public string SelectedClusterGgufPath { get; set; } = "";
-    public RuntimeHealthState InferenceState { get; private set; } = RuntimeHealthState.Offline;
-    public string InferenceActiveModel { get; private set; } = "";
-    public long InferenceLatencyMs { get; private set; }
-    public string InferenceStatusDetail { get; private set; } = "Unchecked";
+    public RuntimeHealthState InferenceState
+    {
+        get { lock (_runtimeStateLock) return _inferenceState; }
+        private set { lock (_runtimeStateLock) _inferenceState = value; }
+    }
+    public string InferenceActiveModel
+    {
+        get { lock (_runtimeStateLock) return _inferenceActiveModel; }
+        private set { lock (_runtimeStateLock) _inferenceActiveModel = value; }
+    }
+    public long InferenceLatencyMs
+    {
+        get { lock (_runtimeStateLock) return _inferenceLatencyMs; }
+        private set { lock (_runtimeStateLock) _inferenceLatencyMs = value; }
+    }
+    public string InferenceStatusDetail
+    {
+        get { lock (_runtimeStateLock) return _inferenceStatusDetail; }
+        private set { lock (_runtimeStateLock) _inferenceStatusDetail = value; }
+    }
 
     // 1b. Sleep Memory (MoE Consolidation Daemon Telemetry)
     public bool SleepEnabled { get; private set; }
@@ -105,20 +122,104 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     public int DistributedMaxTokens { get; set; } = -1; // --tokens (-1 = unlimited)
     public string NewNodeEndpointInput { get; set; } = "";
 
-    public RuntimeHealthState DistributedState { get; private set; } = RuntimeHealthState.Offline;
-    public string DistributedActiveModel { get; private set; } = "";
-    public long DistributedLatencyMs { get; private set; }
-    public string DistributedStatusDetail { get; private set; } = "Unchecked";
-    public IReadOnlyList<ClusterStageStatusItem> DistributedClusterStages => _distributedClusterStages;
+    public RuntimeHealthState DistributedState
+    {
+        get { lock (_runtimeStateLock) return _distributedState; }
+        private set { lock (_runtimeStateLock) _distributedState = value; }
+    }
+    public string DistributedActiveModel
+    {
+        get { lock (_runtimeStateLock) return _distributedActiveModel; }
+        private set { lock (_runtimeStateLock) _distributedActiveModel = value; }
+    }
+    public long DistributedLatencyMs
+    {
+        get { lock (_runtimeStateLock) return _distributedLatencyMs; }
+        private set { lock (_runtimeStateLock) _distributedLatencyMs = value; }
+    }
+    public string DistributedStatusDetail
+    {
+        get { lock (_runtimeStateLock) return _distributedStatusDetail; }
+        private set { lock (_runtimeStateLock) _distributedStatusDetail = value; }
+    }
+    public IReadOnlyList<ClusterStageStatusItem> DistributedClusterStages
+    {
+        get
+        {
+            lock (_runtimeStateLock)
+            {
+                return _distributedClusterStages.ToArray();
+            }
+        }
+    }
     private readonly List<ClusterStageStatusItem> _distributedClusterStages = new();
 
     // 3. Remote Beast Cluster Node (RTX 3060 12GB - Glacier-Architect-Coder-14B-Q4_K_M)
     public string BeastEndpointUrl { get; set; } = GlacierStudioState.ResolveDefaultClusterEndpointUrl();
     public string BeastDefaultModel { get; set; } = "Glacier-Architect-Coder-14B-Q4_K_M";
-    public RuntimeHealthState BeastClusterState { get; private set; } = RuntimeHealthState.Offline;
-    public string BeastClusterActiveModel { get; private set; } = "";
-    public long BeastClusterLatencyMs { get; private set; }
-    public string BeastClusterStatusDetail { get; private set; } = "Unchecked";
+    public RuntimeHealthState BeastClusterState
+    {
+        get { lock (_runtimeStateLock) return _beastClusterState; }
+        private set { lock (_runtimeStateLock) _beastClusterState = value; }
+    }
+    public string BeastClusterActiveModel
+    {
+        get { lock (_runtimeStateLock) return _beastClusterActiveModel; }
+        private set { lock (_runtimeStateLock) _beastClusterActiveModel = value; }
+    }
+    public long BeastClusterLatencyMs
+    {
+        get { lock (_runtimeStateLock) return _beastClusterLatencyMs; }
+        private set { lock (_runtimeStateLock) _beastClusterLatencyMs = value; }
+    }
+    public string BeastClusterStatusDetail
+    {
+        get { lock (_runtimeStateLock) return _beastClusterStatusDetail; }
+        private set { lock (_runtimeStateLock) _beastClusterStatusDetail = value; }
+    }
+
+    // 3b. Local NPU Sidecar Slot (AMD XDNA 2 / FastFlowLM / Lemonade)
+    public const double DefaultNpuSharedCapGb = 15.5;
+    private readonly object _runtimeStateLock = new();
+    private RuntimeHealthState _inferenceState = RuntimeHealthState.Offline;
+    private string _inferenceActiveModel = "";
+    private long _inferenceLatencyMs;
+    private string _inferenceStatusDetail = "Unchecked";
+    private RuntimeHealthState _distributedState = RuntimeHealthState.Offline;
+    private string _distributedActiveModel = "";
+    private long _distributedLatencyMs;
+    private string _distributedStatusDetail = "Unchecked";
+    private RuntimeHealthState _beastClusterState = RuntimeHealthState.Offline;
+    private string _beastClusterActiveModel = "";
+    private long _beastClusterLatencyMs;
+    private string _beastClusterStatusDetail = "Unchecked";
+    private readonly object _npuStateLock = new();
+    private int _activeLocalGpuRequests;
+    private volatile bool _isGpuBusyOverride;
+    private int _disposed;
+
+    public RuntimeHealthState NpuSidecarState { get; private set; } = RuntimeHealthState.Offline;
+    public string NpuSidecarEndpointUrl { get; private set; } = "";
+    public string NpuSidecarCustomEndpointUrl { get; set; } = "";
+    public NpuSidecarRuntime NpuSidecarRuntime { get; private set; } = NpuSidecarRuntime.Unknown;
+    public string NpuSidecarRuntimeName { get; private set; } = "Unchecked";
+    public IReadOnlyList<string> NpuSidecarModels { get; private set; } = Array.Empty<string>();
+    public string NpuSidecarActiveModel { get; private set; } = "";
+    public long NpuSidecarLatencyMs { get; private set; }
+    public string NpuSidecarStatusDetail { get; private set; } = "Unchecked";
+    public string NpuDeviceId { get; private set; } = "";
+    public string NpuDeviceName { get; private set; } = "";
+    public bool IsNpuHardwarePresent { get; private set; }
+    public double NpuSidecarSharedCapGb { get; private set; } = DefaultNpuSharedCapGb;
+    public bool AllowNpuOffloadOnBusyGpu { get; set; }
+    public bool PreferNpuForLocalFastTool { get; set; }
+
+    public int ActiveLocalGpuRequests => Volatile.Read(ref _activeLocalGpuRequests);
+    public bool IsGpuBusy
+    {
+        get => _isGpuBusyOverride || Volatile.Read(ref _activeLocalGpuRequests) > 0;
+        set => _isGpuBusyOverride = value;
+    }
 
     // 4. Circuit Breaker & Real-time Telemetry
     private CircuitBreakerState _remoteNodeState = CircuitBreakerState.Closed;
@@ -185,6 +286,8 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             };
             _ownsProbeClient = true;
         }
+
+        RefreshNpuHardware();
 
         if (autoDiscover)
         {
@@ -486,9 +589,129 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             ProbeInferenceServerAsync(),
             ProbeDistributedServerAsync(),
             ProbeBeastServerAsync(),
+            ProbeNpuSidecarAsync(),
             ProbeSleepStatusAsync());
         NotifyChanged();
     }
+
+    public void RefreshNpuHardware(IReadOnlyList<DeviceInfo>? devicesOverride = null)
+    {
+        IReadOnlyList<DeviceInfo> npus = devicesOverride ?? SafeGetNpuDevices();
+        lock (_npuStateLock)
+        {
+            if (npus.Count > 0)
+            {
+                var primary = npus[0];
+                IsNpuHardwarePresent = true;
+                NpuDeviceId = primary.Id;
+                NpuDeviceName = primary.Name;
+                NpuSidecarSharedCapGb = primary.SharedVramGb > 0
+                    ? Math.Round(primary.SharedVramGb, 1)
+                    : DefaultNpuSharedCapGb;
+            }
+            else
+            {
+                IsNpuHardwarePresent = false;
+                NpuDeviceId = "";
+                NpuDeviceName = "";
+                NpuSidecarSharedCapGb = DefaultNpuSharedCapGb;
+            }
+        }
+    }
+
+    private static IReadOnlyList<DeviceInfo> SafeGetNpuDevices()
+    {
+        try
+        {
+            return DeviceManager.GetNpuDevices();
+        }
+        catch
+        {
+            return Array.Empty<DeviceInfo>();
+        }
+    }
+
+    public Task<bool> ProbeNpuSidecarAsync(CancellationToken ct = default)
+        => ProbeNpuSidecarAsync(candidates: null, ct);
+
+    public async Task<bool> ProbeNpuSidecarAsync(
+        IReadOnlyList<(string BaseUrl, NpuSidecarRuntime Runtime)>? candidates,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var effectiveCandidates = candidates
+                ?? (!string.IsNullOrWhiteSpace(NpuSidecarCustomEndpointUrl)
+                    ? NpuSidecarDiscovery.GetDefaultCandidateEndpoints(NpuSidecarCustomEndpointUrl)
+                    : null);
+
+            NpuSidecarEndpoint? endpoint = await NpuSidecarDiscovery.ProbeAsync(
+                httpClient: _probeClient,
+                candidates: effectiveCandidates,
+                perEndpointTimeout: TimeSpan.FromMilliseconds(350),
+                cancellationToken: ct).ConfigureAwait(false);
+
+            lock (_npuStateLock)
+            {
+                if (endpoint != null)
+                {
+                    NpuSidecarState = RuntimeHealthState.Online;
+                    NpuSidecarEndpointUrl = endpoint.BaseUrl;
+                    NpuSidecarRuntime = endpoint.Runtime;
+                    NpuSidecarRuntimeName = FormatNpuRuntimeName(endpoint.Runtime);
+                    NpuSidecarModels = endpoint.Models.ToArray();
+                    NpuSidecarActiveModel = endpoint.PrimaryModel ?? "npu-model";
+                    NpuSidecarLatencyMs = (long)Math.Round(endpoint.LatencyMs);
+                    string hwLabel = !string.IsNullOrEmpty(NpuDeviceId)
+                        ? $"{NpuDeviceId} · {NpuSidecarSharedCapGb:F1} GB cap"
+                        : $"{NpuSidecarSharedCapGb:F1} GB cap";
+                    NpuSidecarStatusDetail = $"Online · {NpuSidecarRuntimeName} · {NpuSidecarLatencyMs} ms · {hwLabel}";
+                    return true;
+                }
+
+                SetNpuOfflineLocked();
+                return false;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            lock (_npuStateLock)
+            {
+                SetNpuOfflineLocked();
+            }
+            return false;
+        }
+        catch
+        {
+            lock (_npuStateLock)
+            {
+                SetNpuOfflineLocked();
+            }
+            return false;
+        }
+    }
+
+    private void SetNpuOfflineLocked()
+    {
+        NpuSidecarState = RuntimeHealthState.Offline;
+        NpuSidecarEndpointUrl = "";
+        NpuSidecarRuntime = NpuSidecarRuntime.Unknown;
+        NpuSidecarRuntimeName = "Offline";
+        NpuSidecarModels = Array.Empty<string>();
+        NpuSidecarActiveModel = "";
+        NpuSidecarLatencyMs = 0;
+        NpuSidecarStatusDetail = IsNpuHardwarePresent
+            ? $"Offline ({NpuDeviceId} · {NpuSidecarSharedCapGb:F1} GB cap)"
+            : "Offline (No sidecar detected)";
+    }
+
+    private static string FormatNpuRuntimeName(NpuSidecarRuntime runtime) => runtime switch
+    {
+        NpuSidecarRuntime.FastFlowLM => "FastFlowLM",
+        NpuSidecarRuntime.LemonadeServer => "Lemonade",
+        NpuSidecarRuntime.CustomOpenAi => "CustomOpenAI",
+        _ => "Unknown"
+    };
 
     public async Task<bool> ProbeInferenceServerAsync()
     {
@@ -508,10 +731,14 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             {
                 string json = await resp.Content.ReadAsStringAsync();
                 string modelId = TryParseFirstModelId(json) ?? "active";
-                InferenceState = RuntimeHealthState.Online;
-                InferenceActiveModel = modelId;
-                InferenceLatencyMs = sw.ElapsedMilliseconds;
-                InferenceStatusDetail = $"Online · {InferenceLatencyMs} ms · :{InferencePort}";
+                long latency = sw.ElapsedMilliseconds;
+                lock (_runtimeStateLock)
+                {
+                    _inferenceState = RuntimeHealthState.Online;
+                    _inferenceActiveModel = modelId;
+                    _inferenceLatencyMs = latency;
+                    _inferenceStatusDetail = $"Online · {latency} ms · :{InferencePort}";
+                }
                 return true;
             }
         }
@@ -520,11 +747,14 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             // Offline or unreachable
         }
 
-        if (InferenceState != RuntimeHealthState.Starting)
+        lock (_runtimeStateLock)
         {
-            InferenceState = RuntimeHealthState.Offline;
-            InferenceActiveModel = "";
-            InferenceStatusDetail = $"Offline (:{InferencePort})";
+            if (_inferenceState != RuntimeHealthState.Starting)
+            {
+                _inferenceState = RuntimeHealthState.Offline;
+                _inferenceActiveModel = "";
+                _inferenceStatusDetail = $"Offline (:{InferencePort})";
+            }
         }
         return false;
     }
@@ -533,9 +763,12 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     {
         if (!IsDistributedProjectPresent)
         {
-            DistributedState = RuntimeHealthState.MissingProject;
-            DistributedStatusDetail = "Project not found in workspace";
-            _distributedClusterStages.Clear();
+            lock (_runtimeStateLock)
+            {
+                _distributedState = RuntimeHealthState.MissingProject;
+                _distributedStatusDetail = "Project not found in workspace";
+                _distributedClusterStages.Clear();
+            }
             return false;
         }
 
@@ -548,15 +781,19 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             {
                 string json = await resp.Content.ReadAsStringAsync();
                 string modelId = TryParseFirstModelId(json) ?? "cluster-model";
-                DistributedState = RuntimeHealthState.Online;
-                DistributedActiveModel = modelId;
-                DistributedLatencyMs = sw.ElapsedMilliseconds;
+                long latency = sw.ElapsedMilliseconds;
 
                 await RefreshClusterStagesStatusAsync();
-                int stageCount = _distributedClusterStages.Count;
-                DistributedStatusDetail = stageCount > 0
-                    ? $"Online · {stageCount} stage(s) · {DistributedLatencyMs} ms · :{DistributedHttpPort}"
-                    : $"Online · {DistributedLatencyMs} ms · :{DistributedHttpPort}";
+                lock (_runtimeStateLock)
+                {
+                    _distributedState = RuntimeHealthState.Online;
+                    _distributedActiveModel = modelId;
+                    _distributedLatencyMs = latency;
+                    int stageCount = _distributedClusterStages.Count;
+                    _distributedStatusDetail = stageCount > 0
+                        ? $"Online · {stageCount} stage(s) · {latency} ms · :{DistributedHttpPort}"
+                        : $"Online · {latency} ms · :{DistributedHttpPort}";
+                }
                 return true;
             }
         }
@@ -565,12 +802,15 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             // Offline or unreachable
         }
 
-        if (DistributedState != RuntimeHealthState.Starting)
+        lock (_runtimeStateLock)
         {
-            DistributedState = RuntimeHealthState.Offline;
-            DistributedActiveModel = "";
-            _distributedClusterStages.Clear();
-            DistributedStatusDetail = $"Offline (:{DistributedHttpPort})";
+            if (_distributedState != RuntimeHealthState.Starting)
+            {
+                _distributedState = RuntimeHealthState.Offline;
+                _distributedActiveModel = "";
+                _distributedClusterStages.Clear();
+                _distributedStatusDetail = $"Offline (:{DistributedHttpPort})";
+            }
         }
         return false;
     }
@@ -596,10 +836,14 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             {
                 string json = await resp.Content.ReadAsStringAsync(ct);
                 string modelId = TryParseFirstModelId(json) ?? BeastDefaultModel;
-                BeastClusterActiveModel = modelId;
-                BeastClusterLatencyMs = sw.ElapsedMilliseconds;
-                BeastClusterStatusDetail = $"Online · {BeastClusterLatencyMs} ms · {endpointLabel}";
-                RecordRemoteSuccess(BeastClusterLatencyMs);
+                long latency = sw.ElapsedMilliseconds;
+                lock (_runtimeStateLock)
+                {
+                    _beastClusterActiveModel = modelId;
+                    _beastClusterLatencyMs = latency;
+                    _beastClusterStatusDetail = $"Online · {latency} ms · {endpointLabel}";
+                }
+                RecordRemoteSuccess(latency);
                 return true;
             }
             else
@@ -621,15 +865,18 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     private void StartHealthProbeLoop()
     {
+        CancellationToken ct = _healthProbeCts.Token;
         _healthProbeTask = Task.Run(async () =>
         {
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-            while (!_healthProbeCts.IsCancellationRequested)
+            while (!ct.IsCancellationRequested && Volatile.Read(ref _disposed) == 0)
             {
                 try
                 {
-                    await timer.WaitForNextTickAsync(_healthProbeCts.Token);
-                    await ProbeRemoteNodeAsync(_healthProbeCts.Token);
+                    await timer.WaitForNextTickAsync(ct);
+                    await Task.WhenAll(
+                        ProbeRemoteNodeAsync(ct),
+                        ProbeNpuSidecarAsync(ct));
                 }
                 catch (OperationCanceledException)
                 {
@@ -645,26 +892,44 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public CircuitBreakerState GetCurrentCircuitState()
     {
-        if (_remoteNodeState == CircuitBreakerState.Open)
+        bool transitioned = false;
+        CircuitBreakerState current;
+        lock (_runtimeStateLock)
         {
-            if (DateTime.UtcNow - _circuitBreakerTripTime >= CircuitBreakerCooldown)
+            if (_remoteNodeState == CircuitBreakerState.Open &&
+                DateTime.UtcNow - _circuitBreakerTripTime >= CircuitBreakerCooldown)
             {
                 _remoteNodeState = CircuitBreakerState.HalfOpen;
-                NotifyChanged();
+                transitioned = true;
             }
+            current = _remoteNodeState;
         }
-        return _remoteNodeState;
+        if (transitioned)
+        {
+            NotifyChanged();
+        }
+        return current;
     }
 
     public void RecordRemoteSuccess(long latencyMs = 0)
     {
         Interlocked.Exchange(ref _remoteConsecutiveFailures, 0);
-        BeastClusterLatencyMs = latencyMs;
-        BeastClusterState = RuntimeHealthState.Online;
-
-        if (_remoteNodeState != CircuitBreakerState.Closed)
+        bool closed = false;
+        string modelForLog;
+        lock (_runtimeStateLock)
         {
-            _remoteNodeState = CircuitBreakerState.Closed;
+            _beastClusterLatencyMs = latencyMs;
+            _beastClusterState = RuntimeHealthState.Online;
+            modelForLog = !string.IsNullOrEmpty(_beastClusterActiveModel) ? _beastClusterActiveModel : BeastDefaultModel;
+            if (_remoteNodeState != CircuitBreakerState.Closed)
+            {
+                _remoteNodeState = CircuitBreakerState.Closed;
+                closed = true;
+            }
+        }
+
+        if (closed)
+        {
             _consoleService.AddLog("CIRCUIT", "[CIRCUIT BREAKER]: Beast cluster node recovered. State transitioned to CLOSED.");
             NotifyChanged();
         }
@@ -673,7 +938,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             _telemetryHistory.Add(new NodeTelemetryRecord(
                 BeastEndpointUrl,
-                !string.IsNullOrEmpty(BeastClusterActiveModel) ? BeastClusterActiveModel : BeastDefaultModel,
+                modelForLog,
                 latencyMs,
                 Success: true,
                 Timestamp: DateTime.UtcNow));
@@ -688,13 +953,32 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     {
         Interlocked.Increment(ref _remoteErrorCount);
         int consecutiveFailures = Interlocked.Increment(ref _remoteConsecutiveFailures);
-        BeastClusterState = RuntimeHealthState.Offline;
+        string modelForLog;
+        bool trippedHalfOpen = false;
+        bool trippedClosed = false;
+        lock (_runtimeStateLock)
+        {
+            _beastClusterState = RuntimeHealthState.Offline;
+            modelForLog = !string.IsNullOrEmpty(_beastClusterActiveModel) ? _beastClusterActiveModel : BeastDefaultModel;
+            if (_remoteNodeState == CircuitBreakerState.HalfOpen)
+            {
+                _remoteNodeState = CircuitBreakerState.Open;
+                _circuitBreakerTripTime = DateTime.UtcNow;
+                trippedHalfOpen = true;
+            }
+            else if (_remoteNodeState == CircuitBreakerState.Closed && consecutiveFailures >= 3)
+            {
+                _remoteNodeState = CircuitBreakerState.Open;
+                _circuitBreakerTripTime = DateTime.UtcNow;
+                trippedClosed = true;
+            }
+        }
 
         lock (_telemetryHistory)
         {
             _telemetryHistory.Add(new NodeTelemetryRecord(
                 BeastEndpointUrl,
-                !string.IsNullOrEmpty(BeastClusterActiveModel) ? BeastClusterActiveModel : BeastDefaultModel,
+                modelForLog,
                 0,
                 Success: false,
                 Timestamp: DateTime.UtcNow,
@@ -705,17 +989,13 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             }
         }
 
-        if (_remoteNodeState == CircuitBreakerState.HalfOpen)
+        if (trippedHalfOpen)
         {
-            _remoteNodeState = CircuitBreakerState.Open;
-            _circuitBreakerTripTime = DateTime.UtcNow;
             _consoleService.AddLog("CIRCUIT", $"[CIRCUIT BREAKER]: Probe failed in HalfOpen state ({reason}). Tripped back to OPEN.", isError: true);
             NotifyChanged();
         }
-        else if (_remoteNodeState == CircuitBreakerState.Closed && consecutiveFailures >= 3)
+        else if (trippedClosed)
         {
-            _remoteNodeState = CircuitBreakerState.Open;
-            _circuitBreakerTripTime = DateTime.UtcNow;
             _consoleService.AddLog("CIRCUIT", $"[CIRCUIT BREAKER]: 3 consecutive failures reached on Beast node ({reason}). Tripped to OPEN. Automatic local fallback active.", isError: true);
             NotifyChanged();
         }
@@ -723,24 +1003,152 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public void ResetCircuitBreaker()
     {
-        _remoteNodeState = CircuitBreakerState.Closed;
+        lock (_runtimeStateLock)
+        {
+            _remoteNodeState = CircuitBreakerState.Closed;
+            _circuitBreakerTripTime = DateTime.MinValue;
+        }
         Interlocked.Exchange(ref _remoteConsecutiveFailures, 0);
-        _circuitBreakerTripTime = DateTime.MinValue;
         NotifyChanged();
+    }
+
+    public void SetInferenceStateForTesting(RuntimeHealthState state, string modelId = "")
+    {
+        lock (_runtimeStateLock)
+        {
+            _inferenceState = state;
+            _inferenceActiveModel = modelId;
+        }
     }
 
     public void SetBeastClusterStateForTesting(RuntimeHealthState state, string modelId = "qwen2.5-coder-14b")
     {
-        BeastClusterState = state;
-        BeastClusterActiveModel = modelId;
+        lock (_runtimeStateLock)
+        {
+            _beastClusterState = state;
+            _beastClusterActiveModel = modelId;
+        }
     }
 
     public void SetCircuitStateForTesting(CircuitBreakerState state)
     {
-        _remoteNodeState = state;
-        if (state == CircuitBreakerState.Open)
+        lock (_runtimeStateLock)
         {
-            _circuitBreakerTripTime = DateTime.UtcNow;
+            _remoteNodeState = state;
+            if (state == CircuitBreakerState.Open)
+            {
+                _circuitBreakerTripTime = DateTime.UtcNow;
+            }
+        }
+    }
+
+    public void BeginLocalGpuTurn() => Interlocked.Increment(ref _activeLocalGpuRequests);
+
+    public void EndLocalGpuTurn()
+    {
+        while (true)
+        {
+            int cur = Volatile.Read(ref _activeLocalGpuRequests);
+            if (cur <= 0) break;
+            if (Interlocked.CompareExchange(ref _activeLocalGpuRequests, cur - 1, cur) == cur) break;
+        }
+    }
+
+    public void SetGpuBusyForTesting(bool isBusy) => _isGpuBusyOverride = isBusy;
+
+    public bool IsLocalGpuEndpoint(string? endpointUrl)
+    {
+        if (string.IsNullOrWhiteSpace(endpointUrl)) return false;
+        if (!Uri.TryCreate(endpointUrl.Trim(), UriKind.Absolute, out var uri)) return false;
+        bool isLoopback = string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase);
+        return isLoopback && (uri.Port == InferencePort || uri.Port == DistributedHttpPort);
+    }
+
+    public void SetNpuSidecarStateForTesting(
+        RuntimeHealthState state,
+        string endpointUrl = "http://127.0.0.1:52625",
+        string modelId = "qwen3.5-9b",
+        NpuSidecarRuntime runtime = NpuSidecarRuntime.FastFlowLM,
+        IReadOnlyList<string>? models = null)
+    {
+        lock (_npuStateLock)
+        {
+            if (state == RuntimeHealthState.Online)
+            {
+                NpuSidecarState = RuntimeHealthState.Online;
+                NpuSidecarEndpointUrl = string.IsNullOrWhiteSpace(endpointUrl)
+                    ? ""
+                    : endpointUrl.Trim().TrimEnd('/');
+                if (NpuSidecarEndpointUrl.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+                {
+                    NpuSidecarEndpointUrl = NpuSidecarEndpointUrl[..^3].TrimEnd('/');
+                }
+                NpuSidecarRuntime = runtime;
+                NpuSidecarRuntimeName = FormatNpuRuntimeName(runtime);
+                NpuSidecarModels = models?.ToArray() ?? (string.IsNullOrWhiteSpace(modelId) ? Array.Empty<string>() : new[] { modelId });
+                NpuSidecarActiveModel = !string.IsNullOrWhiteSpace(modelId)
+                    ? modelId
+                    : (NpuSidecarModels.Count > 0 ? NpuSidecarModels[0] : "qwen3.5-9b");
+                NpuSidecarLatencyMs = 1;
+                NpuSidecarStatusDetail = $"Online · {NpuSidecarRuntimeName} · {NpuSidecarSharedCapGb:F1} GB cap";
+            }
+            else
+            {
+                SetNpuOfflineLocked();
+                NpuSidecarState = state;
+            }
+        }
+    }
+
+    public static string NormalizeOpenAiV1Endpoint(string? baseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            return "";
+
+        string trimmed = baseUrl.Trim();
+        int suffixIdx = trimmed.IndexOfAny(['?', '#']);
+        string pathPart = (suffixIdx >= 0 ? trimmed[..suffixIdx] : trimmed).TrimEnd('/');
+        string suffix = suffixIdx >= 0 ? trimmed[suffixIdx..] : string.Empty;
+
+        if (string.IsNullOrWhiteSpace(pathPart))
+            return "";
+
+        if (pathPart.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+            return pathPart + suffix;
+
+        return $"{pathPart}/v1{suffix}";
+    }
+
+    public bool TryGetOnlineNpuConfig(out string endpointUrl, out string activeModel)
+    {
+        lock (_npuStateLock)
+        {
+            if (NpuSidecarState == RuntimeHealthState.Online &&
+                !string.IsNullOrWhiteSpace(NpuSidecarEndpointUrl))
+            {
+                endpointUrl = NormalizeOpenAiV1Endpoint(NpuSidecarEndpointUrl);
+                activeModel = !string.IsNullOrWhiteSpace(NpuSidecarActiveModel)
+                    ? NpuSidecarActiveModel
+                    : (NpuSidecarModels.Count > 0 ? NpuSidecarModels[0] : "");
+                return true;
+            }
+
+            endpointUrl = "";
+            activeModel = "";
+            return false;
+        }
+    }
+
+    public bool ShouldUseNpuForLocalFastTool()
+    {
+        lock (_npuStateLock)
+        {
+            if (!AllowNpuOffloadOnBusyGpu) return false;
+            if (NpuSidecarState != RuntimeHealthState.Online || string.IsNullOrWhiteSpace(NpuSidecarEndpointUrl))
+                return false;
+
+            return PreferNpuForLocalFastTool || IsGpuBusy || InferenceState != RuntimeHealthState.Online;
         }
     }
 
@@ -748,6 +1156,23 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     {
         if (turnTier == AgentTurnTier.LocalFastTool)
         {
+            string? npuEndpoint = null;
+            lock (_npuStateLock)
+            {
+                if (AllowNpuOffloadOnBusyGpu
+                    && NpuSidecarState == RuntimeHealthState.Online
+                    && !string.IsNullOrWhiteSpace(NpuSidecarEndpointUrl)
+                    && (PreferNpuForLocalFastTool || IsGpuBusy || InferenceState != RuntimeHealthState.Online))
+                {
+                    npuEndpoint = NpuSidecarEndpointUrl;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(npuEndpoint))
+            {
+                return NormalizeOpenAiV1Endpoint(npuEndpoint);
+            }
+
             return $"http://127.0.0.1:{InferencePort}/v1";
         }
 
@@ -772,6 +1197,25 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     {
         if (turnTier == AgentTurnTier.LocalFastTool)
         {
+            string? npuModel = null;
+            lock (_npuStateLock)
+            {
+                if (AllowNpuOffloadOnBusyGpu
+                    && NpuSidecarState == RuntimeHealthState.Online
+                    && !string.IsNullOrWhiteSpace(NpuSidecarEndpointUrl)
+                    && (PreferNpuForLocalFastTool || IsGpuBusy || InferenceState != RuntimeHealthState.Online))
+                {
+                    npuModel = !string.IsNullOrWhiteSpace(NpuSidecarActiveModel)
+                        ? NpuSidecarActiveModel
+                        : (NpuSidecarModels.Count > 0 ? NpuSidecarModels[0] : "qwen3.5-9b");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(npuModel))
+            {
+                return npuModel;
+            }
+
             if (!string.IsNullOrEmpty(InferenceActiveModel)) return InferenceActiveModel;
             var best = GetBestFittingLocalModelInfo(StandaloneVramBudgetGb);
             if (best != null) return Path.GetFileNameWithoutExtension(best.FullPath);
@@ -804,17 +1248,20 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             if (!doc.RootElement.TryGetProperty("stages", out var stagesArr) || stagesArr.ValueKind != JsonValueKind.Array)
                 return;
 
-            _distributedClusterStages.Clear();
-            foreach (var item in stagesArr.EnumerateArray())
+            lock (_runtimeStateLock)
             {
-                int idx = item.TryGetProperty("stage_index", out var pIdx) ? pIdx.GetInt32() : 0;
-                string role = item.TryGetProperty("role", out var pRole) ? pRole.GetString() ?? "" : "";
-                string ep = item.TryGetProperty("endpoint", out var pEp) ? pEp.GetString() ?? "" : "";
-                int startL = item.TryGetProperty("start_layer", out var pStart) ? pStart.GetInt32() : 0;
-                int endL = item.TryGetProperty("end_layer", out var pEnd) ? pEnd.GetInt32() : 0;
-                int countL = item.TryGetProperty("layer_count", out var pCount) ? pCount.GetInt32() : 0;
-                string dev = item.TryGetProperty("device_name", out var pDev) ? pDev.GetString() ?? "" : "";
-                _distributedClusterStages.Add(new ClusterStageStatusItem(idx, role, ep, startL, endL, countL, dev));
+                _distributedClusterStages.Clear();
+                foreach (var item in stagesArr.EnumerateArray())
+                {
+                    int idx = item.TryGetProperty("stage_index", out var pIdx) ? pIdx.GetInt32() : 0;
+                    string role = item.TryGetProperty("role", out var pRole) ? pRole.GetString() ?? "" : "";
+                    string ep = item.TryGetProperty("endpoint", out var pEp) ? pEp.GetString() ?? "" : "";
+                    int startL = item.TryGetProperty("start_layer", out var pStart) ? pStart.GetInt32() : 0;
+                    int endL = item.TryGetProperty("end_layer", out var pEnd) ? pEnd.GetInt32() : 0;
+                    int countL = item.TryGetProperty("layer_count", out var pCount) ? pCount.GetInt32() : 0;
+                    string dev = item.TryGetProperty("device_name", out var pDev) ? pDev.GetString() ?? "" : "";
+                    _distributedClusterStages.Add(new ClusterStageStatusItem(idx, role, ep, startL, endL, countL, dev));
+                }
             }
         }
         catch
@@ -1152,6 +1599,29 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         _studioState.NotifyStateChanged();
     }
 
+    public void ActivateNpuSidecarInStudio()
+    {
+        string endpoint;
+        string model;
+        lock (_npuStateLock)
+        {
+            endpoint = !string.IsNullOrWhiteSpace(NpuSidecarEndpointUrl)
+                ? NormalizeOpenAiV1Endpoint(NpuSidecarEndpointUrl)
+                : (!string.IsNullOrWhiteSpace(NpuSidecarCustomEndpointUrl)
+                    ? NormalizeOpenAiV1Endpoint(NpuSidecarCustomEndpointUrl)
+                    : "http://127.0.0.1:52625/v1");
+            model = !string.IsNullOrWhiteSpace(NpuSidecarActiveModel)
+                ? NpuSidecarActiveModel
+                : (NpuSidecarModels.Count > 0 ? NpuSidecarModels[0] : "qwen3.5-9b");
+        }
+
+        _studioState.Provider = ModelServerProvider.LocalNpuSidecar;
+        _studioState.EndpointUrl = endpoint;
+        _studioState.SelectedModel = model;
+        _studioState.ActiveSession.ModelSnapshot = _studioState.GetModelDisplayName();
+        _studioState.NotifyStateChanged();
+    }
+
     public async Task<bool> StartBeastRemoteServerAsync()
     {
         string targetHost = GetBeastHostOnly();
@@ -1421,11 +1891,30 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public void Dispose()
     {
-        _healthProbeCts.Cancel();
-        _healthProbeCts.Dispose();
-        if (_ownsProbeClient)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        try { _healthProbeCts.Cancel(); } catch (ObjectDisposedException) { }
+
+        var probeTask = _healthProbeTask;
+        if (probeTask != null)
         {
-            _probeClient.Dispose();
+            _ = probeTask.ContinueWith(_ =>
+            {
+                try { _healthProbeCts.Dispose(); } catch { }
+                if (_ownsProbeClient)
+                {
+                    try { _probeClient.Dispose(); } catch { }
+                }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+        else
+        {
+            try { _healthProbeCts.Dispose(); } catch { }
+            if (_ownsProbeClient)
+            {
+                try { _probeClient.Dispose(); } catch { }
+            }
         }
     }
 }

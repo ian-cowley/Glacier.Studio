@@ -32,6 +32,7 @@ public enum ModelServerProvider
     LocalOllama,
     LocalGlacierInference,
     LocalGlacierDistributed,
+    LocalNpuSidecar,
     ClusterBeastCoder,
     LocalLMStudio,
     LocalCustom,

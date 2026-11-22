@@ -166,6 +166,41 @@ public static class GlacierIntentRouter
         };
     }
 
+    public static bool IsLightweightToolIntent(AnalyzedDeveloperIntent? intent)
+    {
+        if (intent == null) return false;
+        return intent.Archetype is DeveloperIntentArchetype.GeneralInquiry or DeveloperIntentArchetype.CodeSearch
+            || (!intent.NeedsWorkspaceMutation && intent.ComplexityScore <= 4.5f);
+    }
+
+    public static AgentTurnTier ResolveTurnTier(
+        ModelServerProvider provider,
+        AnalyzedDeveloperIntent? intent,
+        int currentTurn,
+        bool isSynthesisTurn)
+    {
+        if (provider is ModelServerProvider.LocalGlacierDistributed or ModelServerProvider.ClusterBeastCoder)
+        {
+            return (currentTurn == 1 || isSynthesisTurn)
+                ? AgentTurnTier.RemoteDeepReasoning
+                : AgentTurnTier.LocalFastTool;
+        }
+
+        if (provider == ModelServerProvider.LocalGlacierInference)
+        {
+            return (IsLightweightToolIntent(intent) || (currentTurn > 1 && !isSynthesisTurn))
+                ? AgentTurnTier.LocalFastTool
+                : AgentTurnTier.RemoteDeepReasoning;
+        }
+
+        if (provider == ModelServerProvider.LocalNpuSidecar)
+        {
+            return AgentTurnTier.LocalFastTool;
+        }
+
+        return AgentTurnTier.RemoteDeepReasoning;
+    }
+
     /// <summary>
     /// Stage 4 Clavier In-Flight Post-Tool Supervisor:
     /// Evaluates tool execution output for errors/missing files and formulates immediate recovery hints using the Knowledge Graph.

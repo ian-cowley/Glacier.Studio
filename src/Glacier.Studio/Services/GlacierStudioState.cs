@@ -480,6 +480,14 @@ public class GlacierStudioState
             "Qwen3-4B-Instruct-2507-Q4_K_M",
             "Qwen2.5-7B-Instruct-1M-Q4_K_M"
         ],
+        ModelServerProvider.LocalNpuSidecar =>
+        [
+            "qwen3.5-9b",
+            "qwen3-4b",
+            "lfm2.5-1.2b",
+            "gemma-3-4b",
+            "llama3.2:3b"
+        ],
         ModelServerProvider.ClusterBeastCoder =>
         [
             "qwen2.5-coder-14b-instruct-q3_k_m",
@@ -528,6 +536,10 @@ public class GlacierStudioState
                 EndpointUrl = "http://127.0.0.1:8080/v1";
                 SelectedModel = "Glacier-Architect-Coder-14B-Grandmaster-Q4_K_M";
                 break;
+            case ModelServerProvider.LocalNpuSidecar:
+                EndpointUrl = "http://127.0.0.1:52625/v1";
+                SelectedModel = "qwen3.5-9b";
+                break;
             case ModelServerProvider.ClusterBeastCoder:
                 EndpointUrl = ResolveDefaultClusterEndpointUrl();
                 SelectedModel = "qwen2.5-coder-14b-instruct-q3_k_m";
@@ -559,6 +571,7 @@ public class GlacierStudioState
         ModelServerProvider.LocalOllama => $"Ollama · {SelectedModel}",
         ModelServerProvider.LocalGlacierInference => $"Glacier.Inference · {SelectedModel}",
         ModelServerProvider.LocalGlacierDistributed => $"Glacier.Distributed · {SelectedModel}",
+        ModelServerProvider.LocalNpuSidecar => $"NPU Sidecar · {SelectedModel}",
         ModelServerProvider.ClusterBeastCoder => $"Beast Cluster · {SelectedModel}",
         ModelServerProvider.LocalLMStudio => $"LM Studio · {SelectedModel}",
         ModelServerProvider.LocalCustom => $"Local · {SelectedModel}",
