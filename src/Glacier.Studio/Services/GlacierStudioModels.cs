@@ -781,10 +781,12 @@ public static class GlacierMarkdownRenderer
         encoded = Regex.Replace(encoded, @"&lt;/(b|i|strong|em)&gt;", "</$1>", RegexOptions.IgnoreCase);
 
         // Images / badges: ![alt](url)
-        encoded = Regex.Replace(encoded, @"!\[([^\]]*)\]\(([^\s\)]+)\)", "<img src=\"$2\" alt=\"$1\" class=\"gs-md-img\" style=\"max-height: 22px; vertical-align: middle; display: inline-block; margin: 2px 4px;\" />");
+        encoded = Regex.Replace(encoded, @"!\[([^\]]*)\]\(([^\s\)]+)\)", m =>
+            $"<img src=\"{SanitizeMarkdownUrl(m.Groups[2].Value)}\" alt=\"{m.Groups[1].Value}\" class=\"gs-md-img\" style=\"max-height: 22px; vertical-align: middle; display: inline-block; margin: 2px 4px;\" />");
 
         // Links: [title](url)
-        encoded = Regex.Replace(encoded, @"\[([^\]]+)\]\(([^\s\)]+)\)", "<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"gs-md-link\">$1</a>");
+        encoded = Regex.Replace(encoded, @"\[([^\]]+)\]\(([^\s\)]+)\)", m =>
+            $"<a href=\"{SanitizeMarkdownUrl(m.Groups[2].Value)}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"gs-md-link\">{m.Groups[1].Value}</a>");
 
         // Bold: **text** or __text__
         encoded = Regex.Replace(encoded, @"\*\*(.+?)\*\*", "<strong>$1</strong>");
@@ -801,6 +803,33 @@ public static class GlacierMarkdownRenderer
         encoded = Regex.Replace(encoded, @"(?<!\w)_(.+?)_(?!\w)", "<em>$1</em>");
 
         return encoded;
+    }
+
+    internal static string SanitizeMarkdownUrl(string encodedUrl)
+    {
+        if (string.IsNullOrWhiteSpace(encodedUrl)) return "#";
+        string decoded = System.Net.WebUtility.HtmlDecode(encodedUrl).Trim();
+        for (int i = 0; i < decoded.Length; i++)
+        {
+            if (char.IsControl(decoded[i])) return "#";
+        }
+
+        if (decoded.StartsWith("#", StringComparison.Ordinal) ||
+            decoded.StartsWith("/", StringComparison.Ordinal) ||
+            decoded.StartsWith("./", StringComparison.Ordinal) ||
+            decoded.StartsWith("../", StringComparison.Ordinal))
+        {
+            return encodedUrl;
+        }
+
+        if (decoded.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            decoded.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            decoded.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
+        {
+            return encodedUrl;
+        }
+
+        return "#";
     }
 }
 

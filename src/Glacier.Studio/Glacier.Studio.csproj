@@ -7,7 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
+    <PackageReleaseNotes>v1.2.1: Markdown URL sanitizer, workspace root file containment, and aligned ecosystem dependencies.</PackageReleaseNotes>
     <ApplicationTitle>Glacier Agent Studio (Antigravity 2)</ApplicationTitle>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
@@ -25,34 +26,32 @@
   <ItemGroup>
     <PackageReference Include="Photino.Blazor" Version="4.0.13" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
-    <PackageReference Include="Glacier.AgentDevKit.Adk" Version="1.1.0" />
-    <PackageReference Include="TinyPdf" Version="0.2.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../../Glacier.Inference/src/Glacier.Inference/Glacier.Inference.csproj" Condition="Exists('../../../Glacier.Inference/src/Glacier.Inference/Glacier.Inference.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Inference" Version="1.8.2" Condition="!Exists('../../../Glacier.Inference/src/Glacier.Inference/Glacier.Inference.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Inference" Version="1.10.1" Condition="!Exists('../../../Glacier.Inference/src/Glacier.Inference/Glacier.Inference.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj" Condition="Exists('../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Gpu" Version="1.1.0" Condition="!Exists('../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Gpu" Version="1.2.1" Condition="!Exists('../../../Glacier.Gpu/src/Glacier.Gpu/Glacier.Gpu.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.Polaris/src/Glacier.Polaris/Glacier.Polaris.csproj" Condition="Exists('../../../Glacier.Polaris/src/Glacier.Polaris/Glacier.Polaris.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Polaris" Version="1.2.5" Condition="!Exists('../../../Glacier.Polaris/src/Glacier.Polaris/Glacier.Polaris.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Polaris" Version="1.2.6" Condition="!Exists('../../../Glacier.Polaris/src/Glacier.Polaris/Glacier.Polaris.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.Vector/src/Glacier.Vector/Glacier.Vector.csproj" Condition="Exists('../../../Glacier.Vector/src/Glacier.Vector/Glacier.Vector.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Vector" Version="1.2.0" Condition="!Exists('../../../Glacier.Vector/src/Glacier.Vector/Glacier.Vector.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Vector" Version="1.3.1" Condition="!Exists('../../../Glacier.Vector/src/Glacier.Vector/Glacier.Vector.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.Graph/src/Glacier.Graph/Glacier.Graph.csproj" Condition="Exists('../../../Glacier.Graph/src/Glacier.Graph/Glacier.Graph.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Graph" Version="1.2.0" Condition="!Exists('../../../Glacier.Graph/src/Glacier.Graph/Glacier.Graph.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Graph" Version="1.2.1" Condition="!Exists('../../../Glacier.Graph/src/Glacier.Graph/Glacier.Graph.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.DocTree/src/Glacier.DocTree/Glacier.DocTree.csproj" Condition="Exists('../../../Glacier.DocTree/src/Glacier.DocTree/Glacier.DocTree.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.DocTree" Version="1.3.0" Condition="!Exists('../../../Glacier.DocTree/src/Glacier.DocTree/Glacier.DocTree.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.DocTree" Version="1.3.1" Condition="!Exists('../../../Glacier.DocTree/src/Glacier.DocTree/Glacier.DocTree.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.Clavier/src/Glacier.Clavier/Glacier.Clavier.csproj" Condition="Exists('../../../Glacier.Clavier/src/Glacier.Clavier/Glacier.Clavier.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Clavier" Version="1.2.0" Condition="!Exists('../../../Glacier.Clavier/src/Glacier.Clavier/Glacier.Clavier.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Clavier" Version="1.2.1" Condition="!Exists('../../../Glacier.Clavier/src/Glacier.Clavier/Glacier.Clavier.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
 
     <ProjectReference Include="../../../Glacier.Rag/src/Glacier.Rag/Glacier.Rag.csproj" Condition="Exists('../../../Glacier.Rag/src/Glacier.Rag/Glacier.Rag.csproj') and '$(UseLocalProjectReferences)' != 'false'" />
-    <PackageReference Include="Glacier.Rag" Version="1.4.2" Condition="!Exists('../../../Glacier.Rag/src/Glacier.Rag/Glacier.Rag.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
+    <PackageReference Include="Glacier.Rag" Version="1.4.3" Condition="!Exists('../../../Glacier.Rag/src/Glacier.Rag/Glacier.Rag.csproj') or '$(UseLocalProjectReferences)' == 'false'" />
   </ItemGroup>
 
   <ItemGroup>

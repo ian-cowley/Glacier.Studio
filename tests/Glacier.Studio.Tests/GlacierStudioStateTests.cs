@@ -122,4 +122,32 @@ public class GlacierStudioStateTests
             sleepCheckpointPath: @"C:\models\sleep.gmoe");
         Assert.Contains("--split auto --sleep-memory --sleep-checkpoint \"C:\\models\\sleep.gmoe\"", sleepArgs);
     }
+
+    [Fact]
+    public void MarkdownRendererAndDocPreview_SanitizeDangerousUrls_AndRejectPathTraversal()
+    {
+        string md = "[xss](javascript:alert(1)) ![bad](data:text/html,<svg>) [ok](https://example.com)";
+        string rendered = GlacierMarkdownRenderer.Render(md);
+        Assert.DoesNotContain("javascript:", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("data:", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("href=\"https://example.com\"", rendered);
+
+        string tempRoot = Path.Combine(Path.GetTempPath(), "glacier_doc_sec_" + Guid.NewGuid().ToString("N"));
+        string outsideFile = Path.Combine(Path.GetTempPath(), $"glacier_outside_{Guid.NewGuid():N}.md");
+        Directory.CreateDirectory(tempRoot);
+        File.WriteAllText(outsideFile, "# Secret Outside Workspace");
+        try
+        {
+            var preview = new GlacierDocTreePreviewService(tempRoot);
+            string relEscape = Path.GetRelativePath(tempRoot, outsideFile);
+            preview.LoadFile(relEscape);
+            Assert.Equal("Access Denied", preview.ActiveDocument.Title);
+            Assert.DoesNotContain("Secret Outside Workspace", preview.ActiveDocument.RawContent);
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, true); } catch { }
+            try { File.Delete(outsideFile); } catch { }
+        }
+    }
 }

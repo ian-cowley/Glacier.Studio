@@ -37,20 +37,31 @@ public class GlacierDocTreePreviewService
     {
         try
         {
-            if (!File.Exists(filePath))
+            if (string.IsNullOrWhiteSpace(filePath))
             {
-                string combined = Path.Combine(_workspaceRoot, filePath);
-                if (File.Exists(combined))
-                {
-                    filePath = combined;
-                }
+                return;
             }
 
-            if (File.Exists(filePath))
+            string rootFull = Path.GetFullPath(_workspaceRoot);
+            string rootPrefix = rootFull.EndsWith(Path.DirectorySeparatorChar)
+                ? rootFull
+                : rootFull + Path.DirectorySeparatorChar;
+            string candidate = Path.IsPathRooted(filePath)
+                ? Path.GetFullPath(filePath)
+                : Path.GetFullPath(Path.Combine(rootFull, filePath));
+
+            var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            if (!candidate.StartsWith(rootPrefix, cmp))
             {
-                string content = File.ReadAllText(filePath);
-                string title = Path.GetFileName(filePath);
-                SetDocument(title, content, filePath);
+                SetDocument("Access Denied", $"Path '{filePath}' resolves outside the active workspace root.", filePath);
+                return;
+            }
+
+            if (File.Exists(candidate))
+            {
+                string content = File.ReadAllText(candidate);
+                string title = Path.GetFileName(candidate);
+                SetDocument(title, content, candidate);
             }
         }
         catch (Exception ex)
