@@ -1038,7 +1038,7 @@ public class GlacierAgentEngine
 $@"## 🚀 Heterogeneous Agent Team Synthesis
 
 > **Team Execution Telemetry**:
-> - 🧠 **Lead Architect**: Host DeepSeek-R1-14B (Dual-GPU RTX 4060 + 890M)
+> - 🧠 **Lead Architect**: Local Cluster Architect (Primary Accelerator)
 > - ⚡ **Implementation & Benchmark Lead**: Beast Desktop Qwen2.5-Coder-14B (RTX 3060 12GB)
 > - ⏱️ **Total Wall-Clock Time**: {totalSec:F2}s · **Total Tokens**: {totalTokens} (~{combinedTps:F1} aggregate tok/s)
 > - 🔄 **Transit**: Zero-copy LAN RPC machine-to-machine handoff (zero user clipboard required)

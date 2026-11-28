@@ -387,4 +387,57 @@ public class GlacierStudioStateTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => responder(request, cancellationToken);
     }
+
+    [Fact]
+    public void RuntimeLauncher_DetectStandaloneVramBudgetGb_AdaptsToGpuOrFallsBack()
+    {
+        var cpuOnly = new[]
+        {
+            new Glacier.Inference.Hardware.DeviceInfo
+            {
+                Id = "cpu",
+                Index = 0,
+                Name = "CPU",
+                Vendor = Glacier.Inference.Hardware.GpuVendor.Cpu,
+                DedicatedVramBytes = 0,
+                SharedVramBytes = 32UL * 1024 * 1024 * 1024,
+                IsDisplayDevice = false,
+                SupportedEngines = [Glacier.Inference.Hardware.InferenceEngineType.Cpu],
+                RecommendedEngine = Glacier.Inference.Hardware.InferenceEngineType.Cpu,
+                SafetyNotes = "CPU"
+            }
+        };
+        Assert.Equal(GlacierRuntimeLauncherService.MaxStandaloneVramBudgetGb,
+            GlacierRuntimeLauncherService.DetectStandaloneVramBudgetGb(cpuOnly));
+
+        var gpuList = new[]
+        {
+            new Glacier.Inference.Hardware.DeviceInfo
+            {
+                Id = "gpu-1",
+                Index = 0,
+                Name = "Discrete 16G",
+                Vendor = Glacier.Inference.Hardware.GpuVendor.Nvidia,
+                DedicatedVramBytes = 16UL * 1024 * 1024 * 1024,
+                SharedVramBytes = 32UL * 1024 * 1024 * 1024,
+                IsDisplayDevice = true,
+                SupportedEngines = [Glacier.Inference.Hardware.InferenceEngineType.BareMetal],
+                RecommendedEngine = Glacier.Inference.Hardware.InferenceEngineType.BareMetal,
+                SafetyNotes = "Discrete GPU"
+            }
+        };
+        Assert.Equal(12.0, GlacierRuntimeLauncherService.DetectStandaloneVramBudgetGb(gpuList), precision: 1);
+
+        var state = CreateIsolatedState();
+        var console = new GlacierConsoleService();
+        using var launcher = new GlacierRuntimeLauncherService(
+            state,
+            console,
+            workspaceRoot: Path.GetTempPath(),
+            startBackgroundProber: false,
+            autoDiscover: false,
+            autoProbe: false);
+        Assert.Equal("auto", launcher.InferenceDevice);
+        Assert.True(launcher.StandaloneVramBudgetGb >= 2.0);
+    }
 }

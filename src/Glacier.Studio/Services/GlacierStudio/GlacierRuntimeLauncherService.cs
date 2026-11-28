@@ -53,9 +53,27 @@ public sealed record NodeTelemetryRecord(
 
 public sealed class GlacierRuntimeLauncherService : IDisposable
 {
-    // Hardware-aware VRAM budget constraint (RTX 4060 Laptop dedicated usable VRAM limit)
+    /// <summary>Default standalone VRAM budget fallback (GB) when no discrete GPU is detected.</summary>
     public const double MaxStandaloneVramBudgetGb = 4.8;
-    public double StandaloneVramBudgetGb { get; set; } = MaxStandaloneVramBudgetGb;
+    public double StandaloneVramBudgetGb { get; set; } = DetectStandaloneVramBudgetGb();
+
+    public static double DetectStandaloneVramBudgetGb(IReadOnlyList<DeviceInfo>? devices = null)
+    {
+        devices ??= DeviceManager.GetDevices();
+        double maxDiscrete = 0.0;
+        foreach (DeviceInfo dev in devices)
+        {
+            if (dev.Vendor != GpuVendor.Cpu && !dev.IsNpu && dev.DedicatedVramGb >= 2.0 && dev.DedicatedVramGb > maxDiscrete)
+            {
+                maxDiscrete = dev.DedicatedVramGb;
+            }
+        }
+
+        if (maxDiscrete <= 0.0)
+            return MaxStandaloneVramBudgetGb;
+
+        return Math.Clamp(Math.Round(maxDiscrete * 0.75, 1), 2.0, 64.0);
+    }
 
     private readonly string _workspaceRoot;
     private readonly GlacierStudioState _studioState;
@@ -71,7 +89,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     // 1. Glacier.Inference (Single-Node Bare-Metal GPU Server)
     public int InferencePort { get; set; } = 5055;
-    public string InferenceDevice { get; set; } = "nvidia-rtx-4060";
+    public string InferenceDevice { get; set; } = "auto";
     public string InferenceEngine { get; set; } = "baremetal";
     public int InferenceContextSize { get; set; } = 8192;
     public bool InferenceEnableSleepMemory { get; set; }
@@ -558,7 +576,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     }
 
     /// <summary>
-    /// Evaluates hardware-aware model pairing for single-node local execution (RTX 4060 Laptop dedicated VRAM limit <= 4.8 GB).
+    /// Evaluates hardware-aware model pairing for single-node local execution within <paramref name="maxVramGb"/>.
     /// Returns the full path to the best-fitting local model.
     /// </summary>
     public string GetBestFittingLocalModel(double maxVramGb = MaxStandaloneVramBudgetGb)
@@ -1297,7 +1315,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         if (sizeGb > StandaloneVramBudgetGb)
         {
             _consoleService.AddLog("VRAM_GUARD",
-                $"[GUARD]: Selected model '{Path.GetFileName(SelectedGgufPath)}' ({sizeGb:F1} GB) exceeds RTX 4060 dedicated VRAM limit ({StandaloneVramBudgetGb} GB). Auto-pairing with fitting local model to prevent WDDM paging thrashing...", isError: true);
+                $"[GUARD]: Selected model '{Path.GetFileName(SelectedGgufPath)}' ({sizeGb:F1} GB) exceeds dedicated VRAM budget ({StandaloneVramBudgetGb:F1} GB). Auto-pairing with fitting local model to prevent host paging thrashing...", isError: true);
 
             var bestFitting = GetBestFittingLocalModelInfo(StandaloneVramBudgetGb);
             if (bestFitting != null)

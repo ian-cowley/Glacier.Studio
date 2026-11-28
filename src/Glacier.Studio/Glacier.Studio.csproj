@@ -7,8 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>1.2.1</Version>
-    <PackageReleaseNotes>v1.2.1: Markdown URL sanitizer, workspace root file containment, and aligned ecosystem dependencies.</PackageReleaseNotes>
+    <Version>1.2.2</Version>
+    <PackageReleaseNotes>v1.2.2: Hardware-agnostic VRAM budget auto-detection via DeviceManager and generic cluster telemetry labels.</PackageReleaseNotes>
     <ApplicationTitle>Glacier Agent Studio (Antigravity 2)</ApplicationTitle>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>
