@@ -413,12 +413,25 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public string GetInferenceExePath()
     {
-        string exeName = OperatingSystem.IsWindows() ? "glacier.exe" : "glacier";
-        string debugExe = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin", "Debug", "net10.0", exeName);
-        if (File.Exists(debugExe)) return debugExe;
+        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
+        string cliBinDir = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin");
+        string[] candidates =
+        [
+            Path.Combine(cliBinDir, "Debug", "net10.0", $"glacier-ai{ext}"),
+            Path.Combine(cliBinDir, "Release", "net10.0", $"glacier-ai{ext}"),
+            Path.Combine(cliBinDir, "Debug", "net10.0", $"glacier{ext}"),
+            Path.Combine(cliBinDir, "Release", "net10.0", $"glacier{ext}")
+        ];
 
-        string releaseExe = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin", "Release", "net10.0", exeName);
-        return File.Exists(releaseExe) ? releaseExe : debugExe;
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return candidates[0];
     }
 
     public string GetClusterCsprojPath() =>
@@ -1349,7 +1362,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             if (!File.Exists(exePath))
             {
                 InferenceState = RuntimeHealthState.Offline;
-                InferenceStatusDetail = "Build failed: glacier.exe not found";
+                InferenceStatusDetail = $"Build failed: {Path.GetFileName(exePath)} not found";
                 NotifyChanged();
                 return false;
             }
@@ -1376,7 +1389,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 splitArg,
                 InferenceEnableSleepMemory,
                 InferenceSleepCheckpointPath);
-            _consoleService.AddLog("SYSTEM", $"Starting Glacier.Inference: glacier.exe {args}");
+            _consoleService.AddLog("SYSTEM", $"Starting Glacier.Inference: {Path.GetFileName(exePath)} {args}");
 
             var psi = new ProcessStartInfo
             {
@@ -1502,7 +1515,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 if (!File.Exists(exePath))
                 {
                     DistributedState = RuntimeHealthState.Offline;
-                    DistributedStatusDetail = "Build failed: glacier.exe not found";
+                    DistributedStatusDetail = $"Build failed: {Path.GetFileName(exePath)} not found";
                     NotifyChanged();
                     return false;
                 }
@@ -1714,7 +1727,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             string remoteClusterDir = Environment.GetEnvironmentVariable("GLACIER_REMOTE_CLUSTER_DIR") ?? "%USERPROFILE%\\.glacier\\cluster";
             string remoteModelsDir = Environment.GetEnvironmentVariable("GLACIER_REMOTE_MODELS_DIR") ?? "%USERPROFILE%\\.glacier\\models";
-            string remoteClusterBin = Environment.GetEnvironmentVariable("GLACIER_REMOTE_CLUSTER_BIN") ?? "glacier.exe";
+            string remoteClusterBin = Environment.GetEnvironmentVariable("GLACIER_REMOTE_CLUSTER_BIN") ?? "glacier-ai.exe";
             _consoleService.AddLog("CLUSTER", $"Launching {BeastDefaultModel} standalone server on cluster node ({targetHost})...");
             string remoteCmd = $"Stop-Process -Name *glacier* -Force -ErrorAction SilentlyContinue; ([wmiclass]'Win32_Process').Create('cmd.exe /c cd /d {remoteClusterDir} && start /b {remoteClusterBin} serve --model {remoteModelsDir}\\{BeastDefaultModel}.gguf --port 8080 --host 0.0.0.0 > beast_serve.log 2>&1')";
 
