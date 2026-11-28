@@ -12,7 +12,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 public class GlacierAgentEngine
 {

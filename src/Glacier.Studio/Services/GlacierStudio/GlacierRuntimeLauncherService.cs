@@ -9,7 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Glacier.Inference.Hardware;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 public enum RuntimeHealthState
 {
@@ -1362,7 +1362,10 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                     splitArg = " --split auto";
                 }
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Trace.TraceWarning($"[GlacierRuntimeLauncherService] Could not inspect model size: {ex.Message}");
+            }
 
             string args = BuildInferenceServeArguments(
                 SelectedGgufPath,
@@ -1434,7 +1437,14 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             {
                 foreach (var proc in Process.GetProcessesByName("glacier"))
                 {
-                    try { proc.Kill(entireProcessTree: true); } catch { }
+                    try
+                    {
+                        proc.Kill(entireProcessTree: true);
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                    {
+                        Trace.TraceWarning($"[GlacierRuntimeLauncherService] Failed to terminate glacier process {proc.Id}: {ex.Message}");
+                    }
                 }
             }
             _consoleService.AddLog("SYSTEM", "Stopped Glacier.Inference server.");
@@ -1594,7 +1604,14 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 {
                     foreach (var proc in Process.GetProcessesByName(name))
                     {
-                        try { proc.Kill(entireProcessTree: true); } catch { }
+                        try
+                        {
+                            proc.Kill(entireProcessTree: true);
+                        }
+                        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+                        {
+                            Trace.TraceWarning($"[GlacierRuntimeLauncherService] Failed to terminate cluster process {proc.Id}: {ex.Message}");
+                        }
                     }
                 }
             }
@@ -1810,7 +1827,10 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 }
             }
         }
-        catch { }
+        catch (JsonException ex)
+        {
+            Trace.TraceWarning($"[GlacierRuntimeLauncherService] Invalid models payload JSON: {ex.Message}");
+        }
         return null;
     }
 
@@ -1882,9 +1902,9 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 return true;
             }
         }
-        catch
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException or JsonException or InvalidOperationException)
         {
-            // Sleep endpoint unavailable
+            Trace.TraceWarning($"[GlacierRuntimeLauncherService] Sleep endpoint unavailable: {ex.Message}");
         }
 
         SleepEnabled = false;
@@ -1955,19 +1975,19 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             _ = probeTask.ContinueWith(_ =>
             {
-                try { _healthProbeCts.Dispose(); } catch { }
+                try { _healthProbeCts.Dispose(); } catch (ObjectDisposedException) { }
                 if (_ownsProbeClient)
                 {
-                    try { _probeClient.Dispose(); } catch { }
+                    try { _probeClient.Dispose(); } catch (ObjectDisposedException) { }
                 }
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
         else
         {
-            try { _healthProbeCts.Dispose(); } catch { }
+            try { _healthProbeCts.Dispose(); } catch (ObjectDisposedException) { }
             if (_ownsProbeClient)
             {
-                try { _probeClient.Dispose(); } catch { }
+                try { _probeClient.Dispose(); } catch (ObjectDisposedException) { }
             }
         }
     }

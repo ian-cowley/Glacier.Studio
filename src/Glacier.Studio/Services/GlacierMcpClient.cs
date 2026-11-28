@@ -8,7 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 /// <summary>
 /// Production JSON-RPC 2.0 client communicating with an external Model Context Protocol (MCP) server
@@ -513,7 +513,10 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
         {
             _cts.Cancel();
         }
-        catch { }
+        catch (ObjectDisposedException)
+        {
+            // Already disposed during teardown
+        }
 
         try
         {
@@ -523,7 +526,10 @@ public class GlacierMcpClient : IAsyncDisposable, IDisposable
                 _process.WaitForExit(1000);
             }
         }
-        catch { }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            Trace.TraceWarning($"[GlacierMcpClient] Failed to terminate MCP process '{_serverName}': {ex.Message}");
+        }
 
         _process?.Dispose();
         _streamReader?.Dispose();

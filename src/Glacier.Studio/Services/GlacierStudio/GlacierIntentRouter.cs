@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 using Glacier.Clavier.Engine;
 using Glacier.Clavier.Model;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 public enum DeveloperIntentArchetype
 {

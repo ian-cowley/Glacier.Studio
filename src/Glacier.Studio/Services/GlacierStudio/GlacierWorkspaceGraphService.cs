@@ -16,11 +16,10 @@ using Glacier.Graph.Traversal;
 using Glacier.Inference.Hardware;
 using Glacier.Rag.Chunking;
 using Glacier.Rag.Embeddings;
-using Glacier.Studio.Services;
 using Glacier.Vector.Index;
 using Glacier.Vector.Storage;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 public sealed class WorkspaceRagOptions
 {
@@ -1770,7 +1769,10 @@ public sealed class GlacierWorkspaceGraphService : IDisposable
                 return Path.GetRelativePath(_workspaceRoot, full).Replace('\\', '/');
             }
         }
-        catch { }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException or System.Security.SecurityException)
+        {
+            Trace.TraceWarning($"[GlacierWorkspaceGraphService] Could not normalize path '{path}': {ex.Message}");
+        }
         return path.Replace('\\', '/').TrimStart('/');
     }
 

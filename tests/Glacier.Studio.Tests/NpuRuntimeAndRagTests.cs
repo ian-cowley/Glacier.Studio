@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 using Bunit;
 using Glacier.Inference.Config;
 using Glacier.Inference.Hardware;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 using Glacier.Studio.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;

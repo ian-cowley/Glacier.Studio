@@ -4,7 +4,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 using Xunit;
 
 [Trait("Category", "Unit")]

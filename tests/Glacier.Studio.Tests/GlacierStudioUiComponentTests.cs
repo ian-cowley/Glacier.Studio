@@ -9,7 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Bunit;
 using Glacier.Studio.Components;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 

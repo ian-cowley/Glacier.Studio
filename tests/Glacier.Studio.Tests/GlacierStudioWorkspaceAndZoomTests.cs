@@ -8,7 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Bunit;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 using Glacier.Studio.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;

@@ -8,7 +8,6 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Glacier.Showcase.Services.GlacierStudio;
 using Glacier.Studio.Serialization;
 using Glacier.Studio.Services;
 using Xunit;

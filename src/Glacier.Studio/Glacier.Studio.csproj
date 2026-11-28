@@ -7,8 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>1.2.2</Version>
-    <PackageReleaseNotes>v1.2.2: Hardware-agnostic VRAM budget auto-detection via DeviceManager and generic cluster telemetry labels.</PackageReleaseNotes>
+    <Version>1.3.0</Version>
+    <PackageReleaseNotes>v1.3.0: Migrate legacy Glacier.Showcase.Services.GlacierStudio namespace to Glacier.Studio.Services and replace bare catch blocks with filtered exception tracing.</PackageReleaseNotes>
     <ApplicationTitle>Glacier Agent Studio (Antigravity 2)</ApplicationTitle>
     <Authors>Ian Cowley</Authors>
     <Company>Glacier High-Performance Ecosystem</Company>

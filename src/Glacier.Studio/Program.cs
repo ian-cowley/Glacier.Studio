@@ -3,7 +3,7 @@ using System.IO;
 using System.Net.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Photino.Blazor;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 
 namespace Glacier.Studio;
 

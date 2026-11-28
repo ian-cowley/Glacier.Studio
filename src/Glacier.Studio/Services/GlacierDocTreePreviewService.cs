@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 using Glacier.DocTree.Core;
 using Glacier.DocTree.Parser;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 public class GlacierDocTreePreviewService
 {
@@ -117,7 +117,10 @@ public class GlacierDocTreePreviewService
                 }
             }
         }
-        catch { }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            System.Diagnostics.Trace.TraceWarning($"[GlacierDocTreePreviewService] Failed to list workspace markdown files: {ex.Message}");
+        }
         return result;
     }
 

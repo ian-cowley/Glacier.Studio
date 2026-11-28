@@ -10,7 +10,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Glacier.Inference.Hardware;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 using Xunit;
 
 public sealed class Tier5M7Phase2HardeningTests : IDisposable

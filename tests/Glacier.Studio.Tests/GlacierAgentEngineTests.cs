@@ -11,7 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Services;
 using Xunit;
 
 [Trait("Category", "Unit")]

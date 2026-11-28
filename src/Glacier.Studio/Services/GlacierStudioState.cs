@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 using Glacier.Studio.Serialization;
 using Glacier.Studio.Services;
 
-namespace Glacier.Showcase.Services.GlacierStudio;
+namespace Glacier.Studio.Services;
 
 public class GlacierStudioState
 {
