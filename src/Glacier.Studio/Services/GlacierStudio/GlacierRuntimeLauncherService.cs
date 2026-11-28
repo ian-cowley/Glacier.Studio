@@ -395,10 +395,11 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public string GetInferenceExePath()
     {
-        string debugExe = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin", "Debug", "net10.0", "glacier.exe");
+        string exeName = OperatingSystem.IsWindows() ? "glacier.exe" : "glacier";
+        string debugExe = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin", "Debug", "net10.0", exeName);
         if (File.Exists(debugExe)) return debugExe;
 
-        string releaseExe = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin", "Release", "net10.0", "glacier.exe");
+        string releaseExe = Path.Combine(_workspaceRoot, "Glacier.Inference", "src", "Glacier.Inference.Cli", "bin", "Release", "net10.0", exeName);
         return File.Exists(releaseExe) ? releaseExe : debugExe;
     }
 
@@ -413,13 +414,14 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         if (!string.IsNullOrWhiteSpace(envExe) && File.Exists(envExe))
             return envExe;
 
+        string ext = OperatingSystem.IsWindows() ? ".exe" : "";
         string cliDir = Path.Combine(_workspaceRoot, "Glacier.Cluster", "src", "Glacier.Cluster.Cli", "bin");
         string[] candidates =
         [
-            Path.Combine(cliDir, "Debug", "net10.0", "glacier-cluster.exe"),
-            Path.Combine(cliDir, "Debug", "net10.0", "Glacier.Cluster.Cli.exe"),
-            Path.Combine(cliDir, "Release", "net10.0", "glacier-cluster.exe"),
-            Path.Combine(cliDir, "Release", "net10.0", "Glacier.Cluster.Cli.exe")
+            Path.Combine(cliDir, "Debug", "net10.0", $"glacier-cluster{ext}"),
+            Path.Combine(cliDir, "Debug", "net10.0", $"Glacier.Cluster.Cli{ext}"),
+            Path.Combine(cliDir, "Release", "net10.0", $"glacier-cluster{ext}"),
+            Path.Combine(cliDir, "Release", "net10.0", $"Glacier.Cluster.Cli{ext}")
         ];
 
         foreach (var c in candidates)

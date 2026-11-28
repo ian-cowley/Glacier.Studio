@@ -1,9 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Glacier.Studio.Serialization;
+using Glacier.Studio.Services;
 
 namespace Glacier.Showcase.Services.GlacierStudio;
 
@@ -16,6 +21,7 @@ public class GlacierStudioState
     private readonly string _sessionsDir;
     private readonly string _exportsDir;
     private readonly string _prefsPath;
+    private readonly string _secretsPath;
 
     public IReadOnlyList<StudioSession> Sessions => _sessions;
     public IReadOnlyList<string> Projects => _projects;
@@ -87,6 +93,7 @@ public class GlacierStudioState
         _sessionsDir = Path.Combine(_workspaceRoot, ".glacier", "studio", "sessions");
         _exportsDir = Path.Combine(_workspaceRoot, ".glacier", "studio", "exports");
         _prefsPath = Path.Combine(_workspaceRoot, ".glacier", "studio", "studio-prefs.json");
+        _secretsPath = Path.Combine(_workspaceRoot, ".glacier", "studio", "secrets.enc.json");
 
         // Try reading environment variable for Gemini or OpenAI if available
         var geminiEnv = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
@@ -175,20 +182,13 @@ public class GlacierStudioState
     public void ZoomOut() => SetUiZoomPercent(UiZoomPercent - 10);
     public void ResetZoom() => SetUiZoomPercent(100);
 
-    private sealed class StudioPreferencesPayload
-    {
-        public int UiZoomPercent { get; set; } = 100;
-        public string? ActiveWorkspaceRoot { get; set; }
-        public List<string>? Projects { get; set; }
-    }
-
     private void LoadPreferencesFromDisk()
     {
         try
         {
             if (!File.Exists(_prefsPath)) return;
             string json = File.ReadAllText(_prefsPath, Encoding.UTF8);
-            var payload = JsonSerializer.Deserialize<StudioPreferencesPayload>(json);
+            var payload = JsonSerializer.Deserialize(json, StudioJsonContext.Default.StudioPreferencesPayload);
             if (payload == null) return;
 
             UiZoomPercent = Math.Clamp(payload.UiZoomPercent == 0 ? 100 : payload.UiZoomPercent, 75, 175);
@@ -212,24 +212,29 @@ public class GlacierStudioState
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"[GlacierStudioState] Failed to load preferences from '{_prefsPath}': {ex.Message}");
+        }
     }
 
     private void SavePreferencesToDisk()
     {
         try
         {
-            string? dir = Path.GetDirectoryName(_prefsPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             var payload = new StudioPreferencesPayload
             {
                 UiZoomPercent = UiZoomPercent,
                 ActiveWorkspaceRoot = ActiveWorkspaceRoot,
                 Projects = _projects.ToList()
             };
-            File.WriteAllText(_prefsPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+            string json = JsonSerializer.Serialize(payload, StudioJsonContext.Indented.StudioPreferencesPayload);
+            AtomicWriteAllText(_prefsPath, json);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"[GlacierStudioState] Failed to save preferences to '{_prefsPath}': {ex.Message}");
+        }
     }
 
     public void LoadSessionsFromDisk()
@@ -244,7 +249,7 @@ public class GlacierStudioState
                     try
                     {
                         string json = File.ReadAllText(file, Encoding.UTF8);
-                        var session = JsonSerializer.Deserialize<StudioSession>(json);
+                        var session = JsonSerializer.Deserialize(json, StudioJsonContext.Default.StudioSession);
                         if (session != null && !string.IsNullOrEmpty(session.Id))
                         {
                             if (!_sessions.Any(s => s.Id == session.Id))
@@ -280,15 +285,123 @@ public class GlacierStudioState
     {
         try
         {
-            Directory.CreateDirectory(_sessionsDir);
             string filePath = Path.Combine(_sessionsDir, $"{session.Id}.json");
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            string json = JsonSerializer.Serialize(session, options);
-            File.WriteAllText(filePath, json, Encoding.UTF8);
+            string json = JsonSerializer.Serialize(session, StudioJsonContext.Indented.StudioSession);
+            AtomicWriteAllText(filePath, json);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[GlacierStudioState] Failed to save session '{session.Id}': {ex.Message}");
+        }
+    }
+
+    public async Task SaveSessionToDiskAsync(StudioSession session, CancellationToken ct = default)
+    {
+        try
+        {
+            string filePath = Path.Combine(_sessionsDir, $"{session.Id}.json");
+            string json = JsonSerializer.Serialize(session, StudioJsonContext.Indented.StudioSession);
+            await AtomicWriteAllTextAsync(filePath, json, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GlacierStudioState] Failed to save session async '{session.Id}': {ex.Message}");
+        }
+    }
+
+    public void SaveProviderApiKey(ModelServerProvider provider, string apiKey, string? keyFilePath = null)
+    {
+        var payload = LoadSecretsPayload();
+        string providerKey = provider.ToString();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            payload.EncryptedProviderKeys.Remove(providerKey);
+        }
+        else
+        {
+            string encrypted = StudioSecretProtector.Encrypt(apiKey, keyFilePath);
+            if (!string.IsNullOrEmpty(encrypted))
+            {
+                payload.EncryptedProviderKeys[providerKey] = encrypted;
+            }
+        }
+
+        string json = JsonSerializer.Serialize(payload, StudioJsonContext.Indented.StudioEncryptedSecretsPayload);
+        AtomicWriteAllText(_secretsPath, json);
+    }
+
+    public string LoadProviderApiKey(ModelServerProvider provider, string? keyFilePath = null)
+    {
+        var payload = LoadSecretsPayload();
+        if (!payload.EncryptedProviderKeys.TryGetValue(provider.ToString(), out string? encrypted) ||
+            string.IsNullOrWhiteSpace(encrypted))
+        {
+            return "";
+        }
+
+        return StudioSecretProtector.Decrypt(encrypted, keyFilePath);
+    }
+
+    private StudioEncryptedSecretsPayload LoadSecretsPayload()
+    {
+        try
+        {
+            if (!File.Exists(_secretsPath))
+                return new StudioEncryptedSecretsPayload();
+            string json = File.ReadAllText(_secretsPath, Encoding.UTF8);
+            return JsonSerializer.Deserialize(json, StudioJsonContext.Default.StudioEncryptedSecretsPayload)
+                ?? new StudioEncryptedSecretsPayload();
+        }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"[GlacierStudioState] Failed to load encrypted secrets from '{_secretsPath}': {ex.Message}");
+            return new StudioEncryptedSecretsPayload();
+        }
+    }
+
+    private static void AtomicWriteAllText(string path, string content)
+    {
+        string? dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        string tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(tempPath, content, Encoding.UTF8);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            if (File.Exists(tempPath))
+            {
+                try { File.Delete(tempPath); }
+                catch (Exception ex) { Trace.TraceWarning($"[GlacierStudioState] Temp cleanup failed for '{tempPath}': {ex.Message}"); }
+            }
+            throw;
+        }
+    }
+
+    private static async Task AtomicWriteAllTextAsync(string path, string content, CancellationToken ct)
+    {
+        string? dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        string tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(tempPath, content, Encoding.UTF8, ct).ConfigureAwait(false);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        catch
+        {
+            if (File.Exists(tempPath))
+            {
+                try { File.Delete(tempPath); }
+                catch (Exception ex) { Trace.TraceWarning($"[GlacierStudioState] Temp cleanup failed for '{tempPath}': {ex.Message}"); }
+            }
+            throw;
         }
     }
 
@@ -348,7 +461,10 @@ public class GlacierStudioState
                     File.Delete(filePath);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning($"[GlacierStudioState] Failed to delete session file '{sessionId}': {ex.Message}");
+            }
 
             if (_activeSessionId == sessionId)
             {
@@ -360,7 +476,7 @@ public class GlacierStudioState
 
     public string ExportActiveSessionAsJson()
     {
-        return JsonSerializer.Serialize(ActiveSession, new JsonSerializerOptions { WriteIndented = true });
+        return JsonSerializer.Serialize(ActiveSession, StudioJsonContext.Indented.StudioSession);
     }
 
     public string ExportActiveSessionAsMarkdown()
@@ -552,13 +668,21 @@ public class GlacierStudioState
                 EndpointUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
                 SelectedModel = "gemini-2.5-flash";
                 if (string.IsNullOrEmpty(ApiKey))
-                    ApiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? "";
+                {
+                    ApiKey = LoadProviderApiKey(provider);
+                    if (string.IsNullOrEmpty(ApiKey))
+                        ApiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? "";
+                }
                 break;
             case ModelServerProvider.RemoteOpenAI:
                 EndpointUrl = "https://api.openai.com/v1";
                 SelectedModel = "gpt-4o";
                 if (string.IsNullOrEmpty(ApiKey))
-                    ApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? "";
+                {
+                    ApiKey = LoadProviderApiKey(provider);
+                    if (string.IsNullOrEmpty(ApiKey))
+                        ApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? "";
+                }
                 break;
         }
 

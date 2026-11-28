@@ -9,6 +9,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Glacier.Showcase.Services.GlacierStudio;
+using Glacier.Studio.Serialization;
+using Glacier.Studio.Services;
 using Xunit;
 
 [Trait("Category", "Unit")]
@@ -253,6 +255,129 @@ public class GlacierStudioStateTests
         finally
         {
             if (Directory.Exists(tempWs)) Directory.Delete(tempWs, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StudioState_SgJsonAndEncryptedSecrets_RoundtripAndNeverStorePlaintext()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), "glacier_studio_sec_" + Guid.NewGuid().ToString("N"));
+        string keyFile = Path.Combine(tempRoot, "local.key");
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var state = new GlacierStudioState(tempRoot);
+            state.SetUiZoomPercent(120);
+            var session = state.CreateNewSession("SG-JSON Session");
+            session.Messages.Add(new ChatMessage { Role = "user", Content = "Hello SG-JSON" });
+            await state.SaveSessionToDiskAsync(session);
+
+            string exported = state.ExportActiveSessionAsJson();
+            var roundtrippedExport = System.Text.Json.JsonSerializer.Deserialize(exported, StudioJsonContext.Default.StudioSession);
+            Assert.NotNull(roundtrippedExport);
+            Assert.Equal("SG-JSON Session", roundtrippedExport.Title);
+
+            var reloaded = new GlacierStudioState(tempRoot);
+            Assert.Equal(120, reloaded.UiZoomPercent);
+            Assert.Contains(reloaded.Sessions, s => s.Id == session.Id && s.Title == "SG-JSON Session");
+
+            const string dummySecret = "not-a-real-secret-unit-test-value";
+            state.SaveProviderApiKey(ModelServerProvider.RemoteOpenAI, dummySecret, keyFile);
+            string secretsDiskText = File.ReadAllText(Path.Combine(tempRoot, ".glacier", "studio", "secrets.enc.json"));
+            Assert.DoesNotContain(dummySecret, secretsDiskText, StringComparison.Ordinal);
+            Assert.Equal(dummySecret, reloaded.LoadProviderApiKey(ModelServerProvider.RemoteOpenAI, keyFile));
+
+            string aesCipher = StudioSecretProtector.EncryptAesGcm(dummySecret, keyFile);
+            Assert.Equal(dummySecret, StudioSecretProtector.DecryptAesGcm(aesCipher, keyFile));
+
+            byte[] raw = Convert.FromBase64String(aesCipher);
+            raw[^1] ^= 0xFF;
+            Assert.Equal("", StudioSecretProtector.DecryptAesGcm(Convert.ToBase64String(raw), keyFile));
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void ConsoleServiceAndLauncher_CrossPlatformShellAndExePaths()
+    {
+        var (psArgs, isPs) = GlacierConsoleService.BuildShellInvocation("pwsh.exe", "echo hi");
+        Assert.True(isPs);
+        Assert.Contains("-EncodedCommand", psArgs);
+
+        var (shArgs, isShPs) = GlacierConsoleService.BuildShellInvocation("/bin/bash", "echo hi");
+        Assert.False(isShPs);
+        Assert.Equal(new[] { "-c", "echo hi" }, shArgs);
+
+        var state = CreateIsolatedState();
+        var console = new GlacierConsoleService();
+        using var launcher = new GlacierRuntimeLauncherService(
+            state,
+            console,
+            workspaceRoot: Path.GetTempPath(),
+            startBackgroundProber: false,
+            autoDiscover: false,
+            autoProbe: false);
+
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.EndsWith(".exe", launcher.GetInferenceExePath(), StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith(".exe", launcher.GetDistributedExePath(), StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            Assert.DoesNotContain(".exe", launcher.GetInferenceExePath(), StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(".exe", launcher.GetDistributedExePath(), StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void WorkspaceGraph_IngestFileContent_UsesCSharpLexerAndIgnoresCommentsAndStrings()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), "glacier_studio_ast_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            using var graphSvc = new GlacierWorkspaceGraphService(
+                tempRoot,
+                new WorkspaceRagOptions { EnableNpuEmbeddings = false });
+
+            string sampleCs = """
+                namespace Demo.Ast;
+
+                // class FakeCommentClass { public void FakeCommentMethod() {} }
+                /*
+                   interface IFakeBlockInterface {}
+                */
+                public interface IRealService
+                {
+                    void Run();
+                }
+
+                public sealed class RealEngine : IRealService
+                {
+                    private const string Snippet = "public class FakeStringClass {}";
+                    public void Run() { }
+                }
+                """;
+
+            string csPath = Path.Combine(tempRoot, "RealEngine.cs");
+            var discovered = graphSvc.IngestFileContent(csPath, sampleCs);
+
+            Assert.Contains(discovered, d => d.Contains("interface IRealService", StringComparison.Ordinal));
+            Assert.Contains(discovered, d => d.Contains("class RealEngine", StringComparison.Ordinal));
+            Assert.Contains(discovered, d => d.Contains("method Run()", StringComparison.Ordinal));
+
+            Assert.DoesNotContain(discovered, d => d.Contains("FakeCommentClass", StringComparison.Ordinal));
+            Assert.DoesNotContain(discovered, d => d.Contains("FakeCommentMethod", StringComparison.Ordinal));
+            Assert.DoesNotContain(discovered, d => d.Contains("IFakeBlockInterface", StringComparison.Ordinal));
+            Assert.DoesNotContain(discovered, d => d.Contains("FakeStringClass", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, recursive: true); } catch { }
         }
     }
 

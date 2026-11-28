@@ -16,6 +16,7 @@ using Glacier.Graph.Traversal;
 using Glacier.Inference.Hardware;
 using Glacier.Rag.Chunking;
 using Glacier.Rag.Embeddings;
+using Glacier.Studio.Services;
 using Glacier.Vector.Index;
 using Glacier.Vector.Storage;
 
@@ -113,18 +114,6 @@ public sealed class GlacierWorkspaceGraphService : IDisposable
     private static readonly Regex ProjectRefRegex = new(
         @"<ProjectReference\s+Include=""([^""]+)""",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex NamespaceRegex = new(
-        @"^\s*namespace\s+([a-zA-Z0-9_\.]+)",
-        RegexOptions.Multiline | RegexOptions.Compiled);
-
-    private static readonly Regex TypeDeclRegex = new(
-        @"^\s*(?:public|internal|private|protected|file)?\s*(?:static|sealed|abstract|partial|readonly|\s)*\b(class|interface|struct|record|enum)\s+([a-zA-Z0-9_<>]+)(?:\s*:\s*([^\r\n\{]+))?",
-        RegexOptions.Multiline | RegexOptions.Compiled);
-
-    private static readonly Regex MethodDeclRegex = new(
-        @"^\s*(?:public|internal|protected)\s+(?:static\s+|async\s+|virtual\s+|override\s+|unsafe\s+)*(?:[a-zA-Z0-9_<>\[\]\.\?,\s]+)\s+([a-zA-Z0-9_]+)\s*\(",
-        RegexOptions.Multiline | RegexOptions.Compiled);
 
     public GraphStore Store => _graph;
     public int NodeCount => _graph.NodeCount;
@@ -841,8 +830,7 @@ public sealed class GlacierWorkspaceGraphService : IDisposable
             {
                 foreach (var csproj in Directory.GetFiles(searchRoot, "*.csproj", SearchOption.AllDirectories))
                 {
-                    if (csproj.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase) ||
-                        csproj.Contains("\\bin\\", StringComparison.OrdinalIgnoreCase))
+                    if (IsBuildArtifactPath(csproj))
                         continue;
 
                     string relCsproj = NormalizeRelativePath(csproj);
@@ -868,8 +856,7 @@ public sealed class GlacierWorkspaceGraphService : IDisposable
                     {
                         foreach (var csFile in Directory.GetFiles(csprojDir, "*.cs", SearchOption.AllDirectories).Take(80))
                         {
-                            if (csFile.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase) ||
-                                csFile.Contains("\\bin\\", StringComparison.OrdinalIgnoreCase))
+                            if (IsBuildArtifactPath(csFile))
                                 continue;
 
                             string relCs = NormalizeRelativePath(csFile);
@@ -962,91 +949,51 @@ public sealed class GlacierWorkspaceGraphService : IDisposable
         string ext = Path.GetExtension(filePath).ToLowerInvariant();
         if (ext == ".cs" || ext == ".razor")
         {
-            foreach (Match nsMatch in NamespaceRegex.Matches(content))
+            ExtractedCSharpSymbols symbols = CSharpSymbolExtractor.Extract(content.AsSpan());
+
+            foreach (string ns in symbols.Namespaces)
             {
-                string ns = nsMatch.Groups[1].Value.Trim();
                 _graph.AddNode(ns, "kind:namespace");
                 _graph.AddEdge(relPath, ns, "IN_NAMESPACE");
             }
 
-            foreach (Match typeMatch in TypeDeclRegex.Matches(content))
+            foreach (var typeDecl in symbols.Types)
             {
-                string kind = typeMatch.Groups[1].Value.Trim();
-                string typeName = typeMatch.Groups[2].Value.Trim();
-                int lineNum = GetLineNumberAtOffset(content, typeMatch.Index);
-
-                string meta = $"kind:{kind}|file:{relPath}|line:{lineNum}";
-
-                int openBrace = content.IndexOf('{', typeMatch.Index);
-                int closeBrace = openBrace >= 0 ? content.IndexOf('}', openBrace + 1) : -1;
-                if (openBrace >= 0 && closeBrace > openBrace && (closeBrace - openBrace) < 2500)
+                string meta = $"kind:{typeDecl.Kind}|file:{relPath}|line:{typeDecl.LineNumber}";
+                if (typeDecl.MemberSummaries.Count > 0)
                 {
-                    string body = content.Substring(openBrace + 1, closeBrace - openBrace - 1);
-                    var members = new List<string>();
-                    foreach (var rawLine in body.Split('\n'))
-                    {
-                        string cleanLine = rawLine.Trim();
-                        if (string.IsNullOrEmpty(cleanLine) || cleanLine.StartsWith("//") || cleanLine.StartsWith("/*") || cleanLine.StartsWith("*") || cleanLine.StartsWith("["))
-                            continue;
-                        int commentIdx = cleanLine.IndexOf("//", StringComparison.Ordinal);
-                        if (commentIdx >= 0) cleanLine = cleanLine[..commentIdx].Trim();
-                        cleanLine = cleanLine.TrimEnd(',', ';');
-                        if (!string.IsNullOrEmpty(cleanLine) && char.IsLetter(cleanLine[0]) && cleanLine.Length < 90)
-                        {
-                            members.Add(cleanLine);
-                        }
-                    }
-                    if (members.Count > 0)
-                    {
-                        meta += $"|members:{string.Join("; ", members.Take(10))}";
-                    }
+                    meta += $"|members:{string.Join("; ", typeDecl.MemberSummaries.Take(10))}";
                 }
-                else if (string.Equals(kind, "record", StringComparison.OrdinalIgnoreCase))
+                else if (!string.IsNullOrEmpty(typeDecl.RecordParameters))
                 {
-                    int openParen = content.IndexOf('(', typeMatch.Index);
-                    int closeParen = openParen >= 0 ? content.IndexOf(')', openParen + 1) : -1;
-                    if (openParen >= 0 && closeParen > openParen && (closeParen - openParen) < 600)
-                    {
-                        string recordParams = Regex.Replace(content.Substring(openParen + 1, closeParen - openParen - 1), @"\s+", " ").Trim();
-                        meta += $"|params:{recordParams}";
-                    }
+                    meta += $"|params:{typeDecl.RecordParameters}";
                 }
 
-                _graph.AddNode(typeName, meta);
-                _graph.AddEdge(relPath, typeName, $"DECLARES_{kind.ToUpperInvariant()}");
-                _graph.AddEdge(typeName, relPath, "DEFINED_IN");
-                discoveredSymbols.Add($"{kind} {typeName} (L{lineNum})");
+                _graph.AddNode(typeDecl.Name, meta);
+                _graph.AddEdge(relPath, typeDecl.Name, $"DECLARES_{typeDecl.Kind.ToUpperInvariant()}");
+                _graph.AddEdge(typeDecl.Name, relPath, "DEFINED_IN");
+                discoveredSymbols.Add($"{typeDecl.Kind} {typeDecl.Name} (L{typeDecl.LineNumber})");
 
-                if (typeMatch.Groups[3].Success)
+                foreach (string baseName in typeDecl.BaseTypes)
                 {
-                    string basesRaw = typeMatch.Groups[3].Value;
-                    foreach (var basePart in basesRaw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                    if (!string.IsNullOrEmpty(baseName) && char.IsLetter(baseName[0]))
                     {
-                        string baseName = basePart.Trim().Split(' ')[0].Trim();
-                        if (!string.IsNullOrEmpty(baseName) && char.IsLetter(baseName[0]))
-                        {
-                            _graph.AddNode(baseName, "kind:type_or_interface");
-                            _graph.AddEdge(typeName, baseName, "INHERITS_OR_IMPLEMENTS");
-                        }
+                        _graph.AddNode(baseName, "kind:type_or_interface");
+                        _graph.AddEdge(typeDecl.Name, baseName, "INHERITS_OR_IMPLEMENTS");
                     }
                 }
             }
 
             int methodCount = 0;
-            foreach (Match methodMatch in MethodDeclRegex.Matches(content))
+            foreach (var methodDecl in symbols.Methods)
             {
-                string methodName = methodMatch.Groups[1].Value.Trim();
-                if (methodName is "if" or "for" or "foreach" or "while" or "switch" or "lock" or "using" or "catch" or "return")
-                    continue;
-
-                int lineNum = GetLineNumberAtOffset(content, methodMatch.Index);
-                string qualifiedMethod = $"{Path.GetFileNameWithoutExtension(relPath)}.{methodName}";
-                _graph.AddNode(qualifiedMethod, $"kind:method|file:{relPath}|line:{lineNum}");
+                string qualifiedMethod = $"{Path.GetFileNameWithoutExtension(relPath)}.{methodDecl.Name}";
+                _graph.AddNode(qualifiedMethod, $"kind:method|file:{relPath}|line:{methodDecl.LineNumber}");
                 _graph.AddEdge(relPath, qualifiedMethod, "DECLARES_METHOD");
 
                 if (methodCount < 12)
                 {
-                    discoveredSymbols.Add($"method {methodName}() (L{lineNum})");
+                    discoveredSymbols.Add($"method {methodDecl.Name}() (L{methodDecl.LineNumber})");
                 }
                 methodCount++;
             }
@@ -1209,15 +1156,23 @@ public sealed class GlacierWorkspaceGraphService : IDisposable
             {
                 string searchPattern = fileNameOnly.Contains('.') ? fileNameOnly : $"{fileNameOnly}.cs";
                 var found = Directory.EnumerateFiles(_workspaceRoot, searchPattern, SearchOption.AllDirectories)
-                    .FirstOrDefault(f => !f.Contains("\\obj\\", StringComparison.OrdinalIgnoreCase) &&
-                                         !f.Contains("\\bin\\", StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(f => !IsBuildArtifactPath(f));
                 if (!string.IsNullOrEmpty(found)) return found;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning($"[GlacierWorkspaceGraphService] File lookup fallback failed for '{fileNameOnly}': {ex.Message}");
+            }
         }
 
         return null;
     }
+
+    private static bool IsBuildArtifactPath(string path) =>
+        path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("/obj/", StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("/bin/", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Synchronous symbol, text, and local-hash semantic search across the workspace.

@@ -68,25 +68,64 @@ public class GlacierConsoleService
         try
         {
             string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-            foreach (var p in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            if (OperatingSystem.IsWindows())
             {
-                string candidate = Path.Combine(p.Trim(), "pwsh.exe");
-                if (File.Exists(candidate))
+                foreach (var p in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
                 {
-                    return "pwsh.exe";
+                    string candidate = Path.Combine(p.Trim(), "pwsh.exe");
+                    if (File.Exists(candidate))
+                    {
+                        return "pwsh.exe";
+                    }
+                }
+
+                string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                string pwshStandard = Path.Combine(programFiles, "PowerShell", "7", "pwsh.exe");
+                if (File.Exists(pwshStandard))
+                {
+                    return pwshStandard;
                 }
             }
-
-            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-            string pwshStandard = Path.Combine(programFiles, "PowerShell", "7", "pwsh.exe");
-            if (File.Exists(pwshStandard))
+            else
             {
-                return pwshStandard;
+                foreach (var p in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    string candidate = Path.Combine(p.Trim(), "pwsh");
+                    if (File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+
+                if (File.Exists("/bin/bash")) return "/bin/bash";
+                if (File.Exists("/usr/bin/bash")) return "/usr/bin/bash";
+                return "/bin/sh";
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Trace.TraceWarning($"[GlacierConsoleService] Shell resolution failed: {ex.Message}");
+        }
 
-        return "powershell.exe";
+        return OperatingSystem.IsWindows() ? "powershell.exe" : "/bin/sh";
+    }
+
+    internal static (string[] Args, bool IsPowerShell) BuildShellInvocation(string shellExecutable, string command)
+    {
+        string exeName = Path.GetFileName(shellExecutable);
+        bool isPowerShell = exeName.Equals("pwsh", StringComparison.OrdinalIgnoreCase) ||
+                            exeName.Equals("pwsh.exe", StringComparison.OrdinalIgnoreCase) ||
+                            exeName.Equals("powershell", StringComparison.OrdinalIgnoreCase) ||
+                            exeName.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase);
+
+        if (isPowerShell)
+        {
+            string scriptWithUtf8 = $"$ProgressPreference = 'SilentlyContinue'; {command}";
+            string encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(scriptWithUtf8));
+            return (["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand], true);
+        }
+
+        return (["-c", command], false);
     }
 
     public void AddLog(string source, string message, bool isError = false, string? command = null)
@@ -171,13 +210,11 @@ public class GlacierConsoleService
         try
         {
             string workingDir = Directory.Exists(CurrentWorkingDirectory) ? CurrentWorkingDirectory : _workspaceRoot;
-            string scriptWithUtf8 = $"$ProgressPreference = 'SilentlyContinue'; {command}";
-            string encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(scriptWithUtf8));
+            var (shellArgs, _) = BuildShellInvocation(_shellExecutable, command);
 
             var psi = new ProcessStartInfo
             {
                 FileName = _shellExecutable,
-                Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encodedCommand}",
                 WorkingDirectory = workingDir,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -186,6 +223,10 @@ public class GlacierConsoleService
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8
             };
+            foreach (string arg in shellArgs)
+            {
+                psi.ArgumentList.Add(arg);
+            }
 
             using var process = new Process { StartInfo = psi };
 
@@ -227,7 +268,10 @@ public class GlacierConsoleService
                         AddLog("SYSTEM", $"Command cancelled by user: {command}", isError: true);
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Trace.TraceWarning($"[GlacierConsoleService] Failed killing cancelled process '{command}': {ex.Message}");
+                }
             });
 
             await process.WaitForExitAsync(cancellationToken);
