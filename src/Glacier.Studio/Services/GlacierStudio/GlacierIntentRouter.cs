@@ -446,11 +446,11 @@ public static class GlacierIntentRouter
         // Check for known ecosystem projects
         string[] knownProjects =
         [
-            "Glacier.Gpu", "Glacier.Inference.Distributed", "Glacier.Inference",
+            "Glacier.Gpu", "Glacier.Serve", "Glacier.Inference",
             "Glacier.Studio", "Glacier.Clavier", "Glacier.Polaris", "Glacier.Vector",
             "Glacier.Graph", "Glacier.DocTree", "Glacier.Grep", "Glacier.SpanCoder",
             "Glacier.Cluster", "Glacier.Tune", "Glacier.Rag", "Glacier.Tensor",
-            "AgentDevKit.Adk", "tinypdf-csharp"
+            "Glacier.Agent", "Glacier.Graphics"
         ];
 
         foreach (var proj in knownProjects)

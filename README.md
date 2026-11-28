@@ -21,7 +21,7 @@
   Workspace Symbol Index    :  Glacier.Graph in-process Forward-Star CSR AST & dependency graph
   Document AST Engine       :  Glacier.DocTree zero-copy ReadOnlySpan<char> parser & outline navigator
   Single-Node GPU Runtime   :  Glacier.Inference bare-metal NVIDIA SASS / D3D12 Wave32 / Vulkan / AVX-512
-  Multi-Node Cluster Runtime:  Glacier.Inference.Distributed pipeline & tensor cluster orchestrator
+  Multi-Node Cluster Runtime:  Glacier.Cluster & Glacier.Serve pipeline/tensor cluster orchestrator
   Protocol & Tooling Bus    :  OpenAI/Ollama SSE Streaming + JSON-RPC 2.0 stdio Model Context Protocol
 ========================================================================================================
 ```
@@ -67,7 +67,7 @@
 | Repository | Role Inside `Glacier.Studio` | Key Architectural Capabilities |
 | :--- | :--- | :--- |
 | **[`Glacier.Inference`](https://github.com/ian-cowley/Glacier.Inference)** | **Single-Node Bare-Metal GPU & SIMD Inference Runtime** | Provides hardware discovery (`DeviceManager`), GGUF weight inspection, and the local `:5055` inference server executing Meta Llama 3, Alibaba Qwen 2.5/3/3.5, DeepSeek-R1, Microsoft Phi-4, and Google Gemma 4 via direct NVIDIA SASS (`nvcuda.dll`), AMD HIP, Direct3D 12 Wave32, Vulkan SPIR-V, and AVX-512 SIMD with zero C++ dependencies. |
-| **[`Glacier.Inference.Distributed`](https://github.com/ian-cowley/Glacier.Inference.Distributed)** | **Multi-Node Pipeline & Tensor Cluster Runtime** | Powers the **Distributed Cluster Launcher** (`:8080` Coordinator & `:5056` Worker nodes). Partitions massive GGUF models across heterogeneous LAN machines using VRAM-weighted auto-allocation (`--layers auto`), 64-byte aligned socket framing over `System.IO.Pipelines`, and live `/v1/cluster/status` stage topology telemetry. |
+| **[`Glacier.Cluster`](https://github.com/ian-cowley/Glacier.Cluster)** & **[`Glacier.Serve`](https://github.com/ian-cowley/Glacier.Serve)** | **Multi-Node Pipeline & Tensor Cluster Runtime** | Powers the **Distributed Cluster Launcher** (`:8080` Coordinator & `:5056` Worker nodes). Partitions massive GGUF models across heterogeneous LAN machines using VRAM-weighted auto-allocation (`--layers auto`), 64-byte aligned socket framing over `System.IO.Pipelines`, and live `/v1/cluster/status` stage topology telemetry. |
 | **[`Glacier.Clavier`](https://github.com/ian-cowley/Glacier.Clavier)** | **System-1 Discrete Decision & Policy Engine** | Drives [`GlacierIntentRouter`](src/Glacier.Studio/Services/GlacierStudio/GlacierIntentRouter.cs) in sub-millisecond forward passes (`Choice`, `Noul`, `Score`). Performs semantic prototype scoring to classify developer intent without brittle regex keyword lists, formulates strategic execution plans, and supervises multi-step ReAct turns. |
 | **[`Glacier.Graph`](https://github.com/ian-cowley/Glacier.Graph)** | **In-Process Forward-Star CSR Knowledge Graph** | Powers [`GlacierWorkspaceGraphService`](src/Glacier.Studio/Services/GlacierStudio/GlacierWorkspaceGraphService.cs) and the **Graph** inspector tab. Indexes `.csproj` dependencies, C# namespaces, classes, structs, interfaces, and methods into a zero-allocation array-backed CSR graph for instant $O(1)$ neighborhood lookups (`query_workspace_graph`). |
 | **[`Glacier.DocTree`](https://github.com/ian-cowley/Glacier.DocTree)** | **Zero-Copy Markdown & Source AST Parser** | Powers [`GlacierDocTreePreviewService`](src/Glacier.Studio/Services/GlacierStudio/GlacierDocTreePreviewService.cs) and the **Document** tab. Parses markdown and source files using `ReadOnlySpan<char>` slicing to generate hierarchical document outlines with 1-based line numbers and click-to-scroll navigation. |
@@ -98,7 +98,7 @@ graph TD
     Engine --> Graph["Glacier.Graph<br/>(CSR Workspace AST Graph)"]
     UI --> DocTree["Glacier.DocTree<br/>(Zero-Copy Markdown AST)"]
     Launcher --> Inf["Glacier.Inference<br/>(Single-Node Bare-Metal GPU :5055)"]
-    Launcher --> Dist["Glacier.Inference.Distributed<br/>(Multi-Node Cluster Coordinator :8080 & Workers)"]
+    Launcher --> Dist["Glacier.Cluster / Glacier.Serve<br/>(Multi-Node Cluster Coordinator :8080 & Workers)"]
     Inf --> Gpu["Glacier.Gpu<br/>(CUDA SASS / D3D12 / Vulkan / HIP)"]
     Dist --> Gpu
 ```
@@ -119,12 +119,12 @@ Located in the **System** tab of the right drawer ([`GlacierRuntimeLauncherServi
 - **Single-Node `Glacier.Inference` Card (`:5055`)**:
   - Configure **Device (`--device`)**, **Engine (`--engine`)** (`baremetal`, `cuda`, `vulkan`, `directcompute`, `cpu`), **HTTP Port (`--port`)**, and **Context Window (`--ctx`)**.
   - One-click **Start Server**, **Use Active**, and **Stop** controls with live millisecond health probes.
-- **Multi-Node `Glacier.Inference.Distributed` Cluster Card (`:8080` / `:5056`)**:
+- **Multi-Node `Glacier.Cluster` / `Glacier.Serve` Cluster Card (`:8080` / `:5056`)**:
   - Switch between **Coordinator (`--role coordinator`)** and **Worker Node (`--role worker`)** roles.
   - **Interactive Worker Stage Node Manager (`--stages` / `--nodes`)**: Add individual `ip:port` worker nodes (`+ Node`), remove stages with one click (`S1 127.0.0.1:5056 ✕`), or apply instant topology presets (**`Local :5056`**, **`2x Local`**, **`LAN 3-Node`**, **`Host Only`**).
   - **Full Coordinator CLI Parameters**: Configure **Layer Split (`--layers`)** (`auto` VRAM-weighted vs. explicit comma-separated counts like `8,14,6`), **Host GPU Adapter (`--host-gpu`)** (`-1` Auto Fastest VRAM or specific DX12 adapter index), **HTTP Bind Address (`--host`)**, **HTTP Port (`--http-port`)**, **Slice Cache Directory (`--cache`)**, and **Max Tokens (`--tokens`)**.
   - **Live Cluster Pipeline Topology**: Queries `GET /v1/cluster/status` when online to display each active stage's role, layer range (`L0..L13`), device name, and endpoint.
-  - **Live CLI Command Preview**: Displays the exact `glacier-distributed` command line generated by your UI configuration.
+  - **Live CLI Command Preview**: Displays the exact `glacier-cluster` command line generated by your UI configuration.
 
 ### 🕸️ 3. In-Process Workspace Knowledge Graph (`Glacier.Graph`)
 - Automatically scans the workspace on startup and builds an in-memory Forward-Star CSR graph of all projects, files, classes, interfaces, structs, and methods.
@@ -161,7 +161,7 @@ cd Glacier.Studio
 dotnet run --project src/Glacier.Studio/Glacier.Studio.csproj -c Release
 ```
 
-> **Note**: `Glacier.Studio` resolves all `Glacier.*` dependencies via NuGet packages (`Glacier.Inference 1.3.2`, `Glacier.DocTree 1.2.0`, `Glacier.Clavier 1.1.0`, `Glacier.Graph 1.1.0`, `Glacier.Gpu 1.1.0`, `Glacier.Polaris 1.1.0`, `Glacier.Vector 1.1.0`, `Glacier.AgentDevKit.Adk 1.1.0`, `TinyPdf 0.2.0`).
+> **Note**: `Glacier.Studio` resolves all `Glacier.*` dependencies via local `<ProjectReference>`s or NuGet packages (`Glacier.Inference 1.10.1`, `Glacier.Cluster 1.3.5`, `Glacier.Serve 1.9.0`, `Glacier.DocTree 1.3.1`, `Glacier.Clavier 1.2.1`, `Glacier.Graph 1.2.1`, `Glacier.Gpu 1.2.1`, `Glacier.Polaris 1.2.6`, `Glacier.Vector 1.3.1`, `Glacier.Rag 1.4.3`).
 
 ---
 

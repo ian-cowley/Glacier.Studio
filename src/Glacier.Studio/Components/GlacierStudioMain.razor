@@ -438,7 +438,7 @@
                                 <button type="button" class="gs-runtime-quick-btn"
                                         disabled="@(RuntimeLauncher.DistributedState == RuntimeHealthState.Starting)"
                                         @onclick="() => RuntimeLauncher.StartDistributedServerAsync()"
-                                        title="Launch local Glacier.Inference.Distributed on :8080">
+                                        title="Launch local Glacier.Cluster / Serve on :8080">
                                     @(RuntimeLauncher.DistributedState == RuntimeHealthState.Starting ? "Starting :8080..." : "▶ Start :8080")
                                 </button>
                             }
@@ -659,7 +659,7 @@
                 {
                     <!-- SYSTEM, LOCAL INFERENCE RUNTIMES & HARDWARE TELEMETRY -->
                     <div class="gs-telemetry-tab">
-                        <!-- LOCAL INFERENCE RUNTIMES (GLACIER.INFERENCE & GLACIER.INFERENCE.DISTRIBUTED) -->
+                        <!-- LOCAL INFERENCE RUNTIMES (GLACIER.INFERENCE & GLACIER.CLUSTER / SERVE) -->
                         <div class="gs-section-label" style="margin-bottom: 4px; display:flex; align-items:center; justify-content:space-between;">
                             <span>Local Inference Runtimes</span>
                             <button class="gs-btn-export" @onclick="() => RuntimeLauncher.ProbeAllRuntimesAsync()" style="padding: 2px 8px; font-size: 0.65rem;">Check Status</button>
@@ -802,15 +802,15 @@
                             </div>
                         </div>
 
-                        <!-- 2. Glacier.Inference.Distributed (Multi-Node Cluster Coordinator / Worker) -->
+                        <!-- 2. Glacier.Cluster / Glacier.Serve (Multi-Node Cluster Coordinator / Worker) -->
                         <div class="gs-runtime-card @(RuntimeLauncher.DistributedState == RuntimeHealthState.Online ? "online" : "")">
                             <div class="gs-runtime-card-header">
                                 <div class="d-flex align-items-center gap-2">
                                     <span class="gs-status-dot @GetHealthDotClass(RuntimeLauncher.DistributedState)"></span>
                                     <div>
-                                        <div class="gs-runtime-name">Glacier.Inference.Distributed</div>
+                                        <div class="gs-runtime-name">Glacier.Cluster / Serve</div>
                                         <div class="gs-runtime-sub">
-                                            Multi-Node Pipeline / Tensor Cluster · @(RuntimeLauncher.DistributedRole == "worker" ? $"TCP :{RuntimeLauncher.DistributedWorkerPort}" : $"HTTP {RuntimeLauncher.DistributedHttpHost}:{RuntimeLauncher.DistributedHttpPort}") · @(RuntimeLauncher.IsDistributedProjectPresent ? "CLI Ready" : "Missing")
+                                            Multi-Node Pipeline / Tensor Cluster · @(RuntimeLauncher.DistributedRole == "worker" ? $"TCP :{RuntimeLauncher.DistributedWorkerPort}" : $"HTTP {RuntimeLauncher.DistributedHttpHost}:{RuntimeLauncher.DistributedHttpPort}") · @(RuntimeLauncher.IsDistributedProjectPresent ? "Cluster Ready" : "Missing")
                                         </div>
                                     </div>
                                 </div>
@@ -971,8 +971,8 @@
                             }
 
                             <!-- CLI Preview -->
-                            <div class="gs-runtime-cli-preview" title="Exact CLI arguments passed to Glacier.Inference.Distributed.Cli">
-                                glacier-distributed @RuntimeLauncher.BuildDistributedCliArgs()
+                            <div class="gs-runtime-cli-preview" title="Exact cluster arguments generated from current configuration">
+                                glacier-cluster @RuntimeLauncher.BuildDistributedCliArgs()
                             </div>
 
                             <div class="gs-runtime-actions">
@@ -1250,7 +1250,7 @@
                         {
                             <div class="gs-settings-section">
                                 <div class="gs-settings-section-title">Model Server &amp; Inference Providers</div>
-                                <div class="gs-settings-section-desc">Configure local inference servers (Glacier.Inference, Glacier.Inference.Distributed, Ollama, LM Studio) or cloud endpoints.</div>
+                                <div class="gs-settings-section-desc">Configure local inference servers (Glacier.Inference, Glacier.Cluster / Serve, Ollama, LM Studio) or cloud endpoints.</div>
 
                                 <div class="gs-modal-form-grid">
                                     <div class="gs-form-group">

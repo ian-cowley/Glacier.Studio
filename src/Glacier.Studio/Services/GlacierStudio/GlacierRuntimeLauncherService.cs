@@ -110,7 +110,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
     public string SleepStatusDetail { get; private set; } = "Unchecked";
     public bool IsTriggeringSleep { get; private set; }
 
-    // 2. Glacier.Inference.Distributed (Multi-Node Cluster Coordinator / Worker)
+    // 2. Glacier.Cluster / Glacier.Serve (Multi-Node Cluster Coordinator / Worker)
     public string DistributedRole { get; set; } = "coordinator"; // "coordinator" or "worker"
     public string DistributedStages { get; set; } = ""; // Local-first dual-GPU (RTX 4060 + Radeon 890M)
     public string DistributedLayers { get; set; } = "20:28"; // 20 on Host RTX 4060 dGPU, 28 on Host Radeon 890M iGPU
@@ -402,18 +402,24 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         return File.Exists(releaseExe) ? releaseExe : debugExe;
     }
 
-    public string GetDistributedCsprojPath() =>
-        Path.Combine(_workspaceRoot, "Glacier.Inference.Distributed", "src", "Glacier.Inference.Distributed.Cli", "Glacier.Inference.Distributed.Cli.csproj");
+    public string GetClusterCsprojPath() =>
+        Path.Combine(_workspaceRoot, "Glacier.Cluster", "src", "Glacier.Cluster", "Glacier.Cluster.csproj");
+
+    public string GetDistributedCsprojPath() => GetClusterCsprojPath();
 
     public string GetDistributedExePath()
     {
-        string cliDir = Path.Combine(_workspaceRoot, "Glacier.Inference.Distributed", "src", "Glacier.Inference.Distributed.Cli", "bin");
+        string? envExe = Environment.GetEnvironmentVariable("GLACIER_CLUSTER_CLI_EXE");
+        if (!string.IsNullOrWhiteSpace(envExe) && File.Exists(envExe))
+            return envExe;
+
+        string cliDir = Path.Combine(_workspaceRoot, "Glacier.Cluster", "src", "Glacier.Cluster.Cli", "bin");
         string[] candidates =
         [
-            Path.Combine(cliDir, "Debug", "net10.0", "glacier-distributed.exe"),
-            Path.Combine(cliDir, "Debug", "net10.0", "Glacier.Inference.Distributed.Cli.exe"),
-            Path.Combine(cliDir, "Release", "net10.0", "glacier-distributed.exe"),
-            Path.Combine(cliDir, "Release", "net10.0", "Glacier.Inference.Distributed.Cli.exe")
+            Path.Combine(cliDir, "Debug", "net10.0", "glacier-cluster.exe"),
+            Path.Combine(cliDir, "Debug", "net10.0", "Glacier.Cluster.Cli.exe"),
+            Path.Combine(cliDir, "Release", "net10.0", "glacier-cluster.exe"),
+            Path.Combine(cliDir, "Release", "net10.0", "Glacier.Cluster.Cli.exe")
         ];
 
         foreach (var c in candidates)
@@ -761,17 +767,6 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
 
     public async Task<bool> ProbeDistributedServerAsync()
     {
-        if (!IsDistributedProjectPresent)
-        {
-            lock (_runtimeStateLock)
-            {
-                _distributedState = RuntimeHealthState.MissingProject;
-                _distributedStatusDetail = "Project not found in workspace";
-                _distributedClusterStages.Clear();
-            }
-            return false;
-        }
-
         var sw = Stopwatch.StartNew();
         try
         {
@@ -806,10 +801,18 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             if (_distributedState != RuntimeHealthState.Starting)
             {
-                _distributedState = RuntimeHealthState.Offline;
+                if (!IsDistributedProjectPresent && !IsInferenceProjectPresent)
+                {
+                    _distributedState = RuntimeHealthState.MissingProject;
+                    _distributedStatusDetail = "Project not found in workspace";
+                }
+                else
+                {
+                    _distributedState = RuntimeHealthState.Offline;
+                    _distributedStatusDetail = $"Offline (:{DistributedHttpPort})";
+                }
                 _distributedActiveModel = "";
                 _distributedClusterStages.Clear();
-                _distributedStatusDetail = $"Offline (:{DistributedHttpPort})";
             }
         }
         return false;
@@ -1450,24 +1453,54 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         try
         {
             string exePath = GetDistributedExePath();
-            if (!File.Exists(exePath))
+            string args;
+            if (File.Exists(exePath))
             {
-                _consoleService.AddLog("SYSTEM", "Compiling Glacier.Inference.Distributed.Cli...");
-                await _consoleService.ExecuteCommandAsync($"dotnet build \"{GetDistributedCsprojPath()}\" -c Debug", "SYSTEM");
-                exePath = GetDistributedExePath();
+                args = BuildDistributedCliArgs();
+                _consoleService.AddLog("SYSTEM", $"Starting Glacier.Cluster ({DistributedRole}): {Path.GetFileName(exePath)} {args}");
             }
+            else if (DistributedRole == "coordinator" && GetConfiguredNodes().Count == 0 && IsInferenceProjectPresent)
+            {
+                exePath = GetInferenceExePath();
+                if (!File.Exists(exePath))
+                {
+                    _consoleService.AddLog("SYSTEM", "Compiling Glacier.Inference.Cli for Host-Only cluster coordinator...");
+                    await _consoleService.ExecuteCommandAsync($"dotnet build \"{GetInferenceCsprojPath()}\" -c Debug", "SYSTEM");
+                    exePath = GetInferenceExePath();
+                }
 
-            if (!File.Exists(exePath))
+                if (!File.Exists(exePath))
+                {
+                    DistributedState = RuntimeHealthState.Offline;
+                    DistributedStatusDetail = "Build failed: glacier.exe not found";
+                    NotifyChanged();
+                    return false;
+                }
+
+                int ctxLen = DistributedMaxTokens > 0 ? DistributedMaxTokens : InferenceContextSize;
+                args = BuildInferenceServeArguments(
+                    SelectedGgufPath,
+                    DistributedHttpPort,
+                    InferenceDevice,
+                    InferenceEngine,
+                    ctxLen,
+                    " --split auto",
+                    InferenceEnableSleepMemory,
+                    InferenceSleepCheckpointPath);
+                if (!string.IsNullOrWhiteSpace(DistributedHttpHost))
+                {
+                    args += $" --host {DistributedHttpHost.Trim()}";
+                }
+                _consoleService.AddLog("SYSTEM", $"Starting Glacier.Cluster Host-Only Coordinator via Glacier.Inference.Cli: {Path.GetFileName(exePath)} {args}");
+            }
+            else
             {
                 DistributedState = RuntimeHealthState.Offline;
-                DistributedStatusDetail = "Build failed: distributed CLI exe not found";
+                DistributedStatusDetail = "Glacier.Cluster library wired; multi-node worker CLI not yet standalone (use Host Only or start cluster HTTP endpoint)";
+                _consoleService.AddLog("CLUSTER", DistributedStatusDetail, isError: true);
                 NotifyChanged();
                 return false;
             }
-
-            string args = BuildDistributedCliArgs();
-
-            _consoleService.AddLog("SYSTEM", $"Starting Glacier.Inference.Distributed ({DistributedRole}): {Path.GetFileName(exePath)} {args}");
 
             var psi = new ProcessStartInfo
             {
@@ -1504,7 +1537,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                 if (await ProbeDistributedServerAsync())
                 {
                     ActivateDistributedInStudio();
-                    _consoleService.AddLog("SYSTEM", $"Glacier.Inference.Distributed is online at http://127.0.0.1:{DistributedHttpPort}/v1");
+                    _consoleService.AddLog("SYSTEM", $"Glacier.Cluster runtime is online at http://127.0.0.1:{DistributedHttpPort}/v1");
                     NotifyChanged();
                     return true;
                 }
@@ -1519,7 +1552,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             DistributedState = RuntimeHealthState.Offline;
             DistributedStatusDetail = $"Start error: {ex.Message}";
-            _consoleService.AddLog("SYSTEM", $"Failed to start Glacier.Inference.Distributed: {ex.Message}", isError: true);
+            _consoleService.AddLog("SYSTEM", $"Failed to start Glacier.Cluster runtime: {ex.Message}", isError: true);
             NotifyChanged();
             return false;
         }
@@ -1537,7 +1570,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
             }
             else
             {
-                foreach (var name in new[] { "glacier-distributed", "Glacier.Inference.Distributed.Cli" })
+                foreach (var name in new[] { "glacier-cluster", "Glacier.Cluster.Cli" })
                 {
                     foreach (var proc in Process.GetProcessesByName(name))
                     {
@@ -1545,7 +1578,7 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
                     }
                 }
             }
-            _consoleService.AddLog("SYSTEM", "Stopped Glacier.Inference.Distributed runtime.");
+            _consoleService.AddLog("SYSTEM", "Stopped Glacier.Cluster runtime.");
         }
         catch (Exception ex)
         {
@@ -1644,8 +1677,9 @@ public sealed class GlacierRuntimeLauncherService : IDisposable
         {
             string remoteClusterDir = Environment.GetEnvironmentVariable("GLACIER_REMOTE_CLUSTER_DIR") ?? "%USERPROFILE%\\.glacier\\cluster";
             string remoteModelsDir = Environment.GetEnvironmentVariable("GLACIER_REMOTE_MODELS_DIR") ?? "%USERPROFILE%\\.glacier\\models";
+            string remoteClusterBin = Environment.GetEnvironmentVariable("GLACIER_REMOTE_CLUSTER_BIN") ?? "glacier.exe";
             _consoleService.AddLog("CLUSTER", $"Launching {BeastDefaultModel} standalone server on cluster node ({targetHost})...");
-            string remoteCmd = $"Stop-Process -Name *glacier* -Force -ErrorAction SilentlyContinue; ([wmiclass]'Win32_Process').Create('cmd.exe /c cd /d {remoteClusterDir} && start /b glacier-distributed.exe serve --model {remoteModelsDir}\\{BeastDefaultModel}.gguf --http-port 8080 --host 0.0.0.0 --cache {remoteModelsDir}\\cache > beast_serve.log 2>&1')";
+            string remoteCmd = $"Stop-Process -Name *glacier* -Force -ErrorAction SilentlyContinue; ([wmiclass]'Win32_Process').Create('cmd.exe /c cd /d {remoteClusterDir} && start /b {remoteClusterBin} serve --model {remoteModelsDir}\\{BeastDefaultModel}.gguf --port 8080 --host 0.0.0.0 > beast_serve.log 2>&1')";
 
             var psi = new ProcessStartInfo
             {

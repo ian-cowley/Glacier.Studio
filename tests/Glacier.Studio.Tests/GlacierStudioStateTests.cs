@@ -3,6 +3,11 @@ namespace Glacier.Studio.Tests;
 using System;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Glacier.Showcase.Services.GlacierStudio;
 using Xunit;
 
@@ -149,5 +154,112 @@ public class GlacierStudioStateTests
             try { Directory.Delete(tempRoot, true); } catch { }
             try { File.Delete(outsideFile); } catch { }
         }
+    }
+
+    [Fact]
+    public void RuntimeLauncher_GetDistributedCsprojPath_TargetsGlacierCluster()
+    {
+        var state = CreateIsolatedState();
+        var console = new GlacierConsoleService();
+        using var launcher = new GlacierRuntimeLauncherService(
+            state,
+            console,
+            workspaceRoot: Path.GetTempPath(),
+            startBackgroundProber: false,
+            autoDiscover: false,
+            autoProbe: false);
+
+        string distPath = launcher.GetDistributedCsprojPath();
+        Assert.Equal(launcher.GetClusterCsprojPath(), distPath);
+        Assert.EndsWith(Path.Combine("Glacier.Cluster", "src", "Glacier.Cluster", "Glacier.Cluster.csproj"), distPath);
+    }
+
+    [Fact]
+    public async Task RuntimeLauncher_ProbeDistributedServerAsync_ProbesHttpEvenWhenStandaloneCliAbsent()
+    {
+        string tempWs = Directory.CreateTempSubdirectory("glacier_cluster_probe_").FullName;
+        try
+        {
+            using var handler = new StubClusterHttpHandler((req, _) =>
+            {
+                string path = req.RequestUri?.AbsolutePath ?? "";
+                if (path.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"data":[{"id":"qwen-cluster-14b"}]}""", Encoding.UTF8, "application/json")
+                    });
+                }
+                if (path.EndsWith("/v1/cluster/status", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"stages":[{"stage_index":0,"role":"coordinator","endpoint":"127.0.0.1:8080","start_layer":0,"end_layer":19,"layer_count":20,"device_name":"RTX 4060"}]}""", Encoding.UTF8, "application/json")
+                    });
+                }
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            });
+            using var http = new HttpClient(handler);
+
+            var state = CreateIsolatedState();
+            var console = new GlacierConsoleService();
+            using var launcher = new GlacierRuntimeLauncherService(
+                state,
+                console,
+                workspaceRoot: tempWs,
+                probeClient: http,
+                startBackgroundProber: false,
+                autoDiscover: false,
+                autoProbe: false);
+
+            Assert.False(launcher.IsDistributedProjectPresent);
+            bool online = await launcher.ProbeDistributedServerAsync();
+
+            Assert.True(online);
+            Assert.Equal(RuntimeHealthState.Online, launcher.DistributedState);
+            Assert.Equal("qwen-cluster-14b", launcher.DistributedActiveModel);
+            Assert.Single(launcher.DistributedClusterStages);
+            Assert.Equal("RTX 4060", launcher.DistributedClusterStages[0].DeviceName);
+        }
+        finally
+        {
+            if (Directory.Exists(tempWs)) Directory.Delete(tempWs, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RuntimeLauncher_StartDistributedServerAsync_WorkerWithoutCli_FailsCleanlyOffline()
+    {
+        string tempWs = Directory.CreateTempSubdirectory("glacier_cluster_worker_").FullName;
+        try
+        {
+            var state = CreateIsolatedState();
+            var console = new GlacierConsoleService();
+            using var launcher = new GlacierRuntimeLauncherService(
+                state,
+                console,
+                workspaceRoot: tempWs,
+                startBackgroundProber: false,
+                autoDiscover: false,
+                autoProbe: false);
+
+            launcher.DistributedRole = "worker";
+            bool started = await launcher.StartDistributedServerAsync();
+
+            Assert.False(started);
+            Assert.Equal(RuntimeHealthState.Offline, launcher.DistributedState);
+            Assert.Contains("Glacier.Cluster", launcher.DistributedStatusDetail);
+        }
+        finally
+        {
+            if (Directory.Exists(tempWs)) Directory.Delete(tempWs, recursive: true);
+        }
+    }
+
+    private sealed class StubClusterHttpHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => responder(request, cancellationToken);
     }
 }
